@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="tracr/web/tracr.png" alt="TRACR logo" width="150" />
+  <img src="media/tracr.png" alt="TRACR logo" width="150" />
 </p>
 
 <h1 align="center">TRACR</h1>
@@ -13,6 +13,8 @@
   <a href="#install-uv">Install</a>
   ·
   <a href="#run">Run</a>
+  ·
+  <a href="#screenshots">Screenshots</a>
   ·
   <a href="#web-reviewer--elo">Web Reviewer + ELO</a>
   ·
@@ -29,7 +31,13 @@ This design follows the same orchestration pattern used in `privasis`: a unified
 
 Detailed architecture notes: `docs/ARCHITECTURE.md`.
 
-## Why Textual (vs Rust ratatui)
+
+### Web Viewer
+
+<p align="center">
+  <img src="media/web-viewer.png" alt="TRACR web viewer screenshot" width="100%" />
+</p>
+
 
 This implementation uses Python `textual` + `rich` so the TUI can share runtime state directly with the Python service, making form-driven launch flows, HTTP integration, and live refresh easier to iterate.
 
