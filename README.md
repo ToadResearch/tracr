@@ -5,7 +5,7 @@
 <h1 align="center">TRACR</h1>
 
 <p align="center">
-  <strong>Toad Research AI Character Recognition</strong><br />
+  <strong>Toad Research 🐸 AI 😉 Character Recognition</strong><br />
   OCR orchestration for cloud APIs and local vLLM models
 </p>
 
