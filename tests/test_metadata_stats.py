@@ -117,3 +117,105 @@ def test_job_metadata_includes_rollup_statistics(tmp_path: Path) -> None:
     assert stats["token_usage"]["input_tokens"] == 100
     assert stats["token_usage"]["output_tokens"] == 70
     assert stats["token_usage"]["total_tokens"] == 170
+
+
+def test_job_metadata_merges_existing_runs_for_reused_job_id(tmp_path: Path) -> None:
+    manager = _build_manager(tmp_path)
+    manager._project_root = tmp_path.resolve()
+
+    metadata_path = tmp_path / "outputs" / "job-s" / "job_metadata.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing_payload = {
+        "job_id": "job-s",
+        "title": "job-s",
+        "input_path": "inputs/doc.pdf",
+        "status": "completed",
+        "created_at": "2026-02-07T00:00:00+00:00",
+        "started_at": "2026-02-07T00:00:05+00:00",
+        "ended_at": "2026-02-07T00:10:00+00:00",
+        "prompt": "ocr",
+        "total_pages_all_models": 2,
+        "completed_pages_all_models": 2,
+        "progress_ratio": 1.0,
+        "models": [
+            {
+                "run_id": "model-a:1",
+                "model": "org/model-a",
+                "mode": "api",
+                "status": "completed",
+                "started_at": "2026-02-07T00:00:05+00:00",
+                "ended_at": "2026-02-07T00:10:00+00:00",
+                "total_pages": 2,
+                "completed_pages": 2,
+                "output_dir": "outputs/job-s/model-a/run-1",
+                "source_files": ["inputs/doc.pdf"],
+                "runtime_seconds": 10.0,
+                "statistics": {
+                    "pages_attempted": 2,
+                    "pages_succeeded": 2,
+                    "pages_failed": 0,
+                    "processing_time_seconds": 3.0,
+                    "ocr_request_time_seconds": 2.0,
+                    "token_usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+                },
+            }
+        ],
+        "statistics": {
+            "pages_attempted": 2,
+            "pages_succeeded": 2,
+            "pages_failed": 0,
+            "processing_time_seconds": 3.0,
+            "ocr_request_time_seconds": 2.0,
+            "runtime_seconds": 10.0,
+            "token_usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+        },
+    }
+    metadata_path.write_text(json.dumps(existing_payload), encoding="utf-8")
+
+    run = ModelRunProgress(
+        run_id="model-b:1",
+        model="org/model-b",
+        mode=ModelMode.API,
+        output_dir=str(tmp_path / "outputs" / "job-s" / "model-b" / "run-1"),
+        total_pages=3,
+        completed_pages=1,
+    )
+    job = JobProgress(
+        job_id="job-s",
+        title="job-s",
+        input_path=str(tmp_path / "inputs" / "doc.pdf"),
+        total_pages_all_models=3,
+        completed_pages_all_models=1,
+        models=[run],
+        metadata_path=str(metadata_path),
+    )
+
+    manager._jobs[job.job_id] = job
+    manager._run_metrics[manager._run_metrics_key(job.job_id, run.run_id)] = {
+        "pages_attempted": 1,
+        "pages_succeeded": 1,
+        "pages_failed": 0,
+        "processing_time_seconds": 1.5,
+        "ocr_request_time_seconds": 1.0,
+        "token_usage": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
+    }
+
+    manager._persist_job_metadata(job.job_id)
+
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    run_ids = {entry.get("run_id") for entry in payload["models"]}
+
+    assert run_ids == {"model-a:1", "model-b:1"}
+    assert payload["created_at"] == "2026-02-07T00:00:00+00:00"
+    assert payload["total_pages_all_models"] == 5
+    assert payload["completed_pages_all_models"] == 3
+    assert payload["status"] == "queued"
+
+    stats = payload["statistics"]
+    assert stats["pages_attempted"] == 3
+    assert stats["pages_succeeded"] == 3
+    assert stats["pages_failed"] == 0
+    assert stats["token_usage"]["input_tokens"] == 15
+    assert stats["token_usage"]["output_tokens"] == 27
+    assert stats["token_usage"]["total_tokens"] == 42

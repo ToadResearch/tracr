@@ -4,10 +4,16 @@ import asyncio
 import concurrent.futures
 import json
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - platform dependent
+    fcntl = None
 
 from tracr.core.config import REPO_ROOT, Settings
 from tracr.core.input_discovery import expand_pdf_inputs, resolve_input_path
@@ -78,7 +84,289 @@ class JobManager:
         except Exception:  # noqa: BLE001
             return str(path)
 
-    def _serialize_run_for_job_metadata(self, run: ModelRunProgress) -> dict[str, Any]:
+    @staticmethod
+    def _parse_iso_datetime(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+
+        raw = str(value).strip()
+        if not raw:
+            return None
+
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+
+        try:
+            return datetime.fromisoformat(raw)
+        except Exception:  # noqa: BLE001
+            return None
+
+    @classmethod
+    def _timestamp_min(cls, values: list[Any]) -> str | None:
+        parsed = [item for item in (cls._parse_iso_datetime(value) for value in values) if item is not None]
+        if not parsed:
+            return None
+        return min(parsed).isoformat()
+
+    @classmethod
+    def _timestamp_max(cls, values: list[Any]) -> str | None:
+        parsed = [item for item in (cls._parse_iso_datetime(value) for value in values) if item is not None]
+        if not parsed:
+            return None
+        return max(parsed).isoformat()
+
+    @staticmethod
+    def _metadata_status_is_active(status_value: str) -> bool:
+        return status_value in {RunStatus.QUEUED.value, RunStatus.WAITING_RESOURCES.value, RunStatus.RUNNING.value}
+
+    @staticmethod
+    def _merge_job_status_from_models(models: list[dict[str, Any]], fallback: str) -> str:
+        statuses = [str(item.get("status") or "").strip().lower() for item in models]
+        statuses = [item for item in statuses if item]
+        if not statuses:
+            return fallback
+
+        if any(item == RunStatus.RUNNING.value for item in statuses):
+            return RunStatus.RUNNING.value
+        if any(item == RunStatus.WAITING_RESOURCES.value for item in statuses):
+            return RunStatus.WAITING_RESOURCES.value
+        if any(item == RunStatus.QUEUED.value for item in statuses):
+            return RunStatus.QUEUED.value
+        if all(item == RunStatus.CANCELED.value for item in statuses):
+            return RunStatus.CANCELED.value
+
+        if any(item == RunStatus.FAILED.value for item in statuses):
+            if any(item == RunStatus.COMPLETED.value for item in statuses):
+                return RunStatus.COMPLETED.value
+            return RunStatus.FAILED.value
+
+        if all(item == RunStatus.COMPLETED.value for item in statuses):
+            return RunStatus.COMPLETED.value
+
+        if any(item == RunStatus.CANCELED.value for item in statuses):
+            if any(item == RunStatus.COMPLETED.value for item in statuses):
+                return RunStatus.COMPLETED.value
+            return RunStatus.CANCELED.value
+
+        return fallback
+
+    @staticmethod
+    def _metadata_lock_path(metadata_path: Path) -> Path:
+        return metadata_path.with_name(f"{metadata_path.name}.lock")
+
+    @contextmanager
+    def _job_metadata_file_lock(self, metadata_path: Path):
+        if fcntl is None:
+            yield
+            return
+
+        lock_path = self._metadata_lock_path(metadata_path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    @staticmethod
+    def _merge_job_models(existing_models: list[dict[str, Any]], current_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        run_id_to_index: dict[str, int] = {}
+
+        def upsert(model_payload: dict[str, Any]) -> None:
+            entry = dict(model_payload)
+            run_id = str(entry.get("run_id") or "").strip()
+            if run_id and run_id in run_id_to_index:
+                prior = dict(merged[run_id_to_index[run_id]])
+                prior.update(entry)
+                merged[run_id_to_index[run_id]] = prior
+                return
+
+            merged.append(entry)
+            if run_id:
+                run_id_to_index[run_id] = len(merged) - 1
+
+        for existing in existing_models:
+            if isinstance(existing, dict):
+                upsert(existing)
+        for current in current_models:
+            if isinstance(current, dict):
+                upsert(current)
+
+        return merged
+
+    def _candidate_run_dir_paths(self, output_dir_value: Any) -> list[Path]:
+        raw = str(output_dir_value or "").strip()
+        if not raw:
+            return []
+
+        candidates: list[Path] = [self.settings.resolve_path(raw)]
+
+        if raw.startswith("/"):
+            candidates.append(self.settings.resolve_path(raw.lstrip("/")))
+
+        normalized = raw.replace("\\", "/")
+        marker = "/outputs/"
+        if marker in normalized:
+            tail = normalized.split(marker, 1)[1].lstrip("/")
+            if tail:
+                candidates.append(self.settings.outputs_path / tail)
+
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = candidate.as_posix()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(candidate)
+        return unique
+
+    def _normalize_job_metadata_model_entry(self, model_payload: dict[str, Any]) -> dict[str, Any]:
+        entry = dict(model_payload)
+        entry["output_dir"] = self._to_project_relative_path(entry.get("output_dir"))
+        entry["current_pdf"] = self._to_project_relative_path(entry.get("current_pdf"))
+
+        source_files = entry.get("source_files")
+        if isinstance(source_files, list):
+            entry["source_files"] = [
+                rel
+                for rel in (self._to_project_relative_path(item) for item in source_files)
+                if rel
+            ]
+
+        run_stats = self._resolve_model_run_statistics(entry)
+        if run_stats:
+            entry["statistics"] = run_stats
+
+        if self._safe_float(entry.get("runtime_seconds")) <= 0:
+            runtime_seconds = self._safe_float(run_stats.get("runtime_seconds"))
+            if runtime_seconds <= 0:
+                runtime_from_metadata = self._resolve_model_run_runtime_seconds(entry)
+                if runtime_from_metadata is not None:
+                    runtime_seconds = runtime_from_metadata
+            if runtime_seconds > 0:
+                entry["runtime_seconds"] = runtime_seconds
+
+        return entry
+
+    def _resolve_model_run_statistics(self, model_payload: dict[str, Any]) -> dict[str, Any]:
+        stats = model_payload.get("statistics")
+        if isinstance(stats, dict) and stats:
+            return stats
+
+        output_dir = model_payload.get("output_dir")
+        for candidate_run_dir in self._candidate_run_dir_paths(output_dir):
+            run_metadata = self._read_json_if_exists(candidate_run_dir / "run_metadata.json")
+            run_stats = run_metadata.get("statistics")
+            if isinstance(run_stats, dict) and run_stats:
+                return run_stats
+
+        return {}
+
+    def _resolve_model_run_runtime_seconds(self, model_payload: dict[str, Any]) -> float | None:
+        output_dir = model_payload.get("output_dir")
+        for candidate_run_dir in self._candidate_run_dir_paths(output_dir):
+            run_metadata = self._read_json_if_exists(candidate_run_dir / "run_metadata.json")
+            runtime_seconds = self._safe_float(run_metadata.get("runtime_seconds"))
+            if runtime_seconds > 0:
+                return runtime_seconds
+        return None
+
+    def _aggregate_job_statistics_from_models(self, models: list[dict[str, Any]]) -> dict[str, Any]:
+        aggregate = self._new_metrics()
+        runtime_seconds = 0.0
+        runtime_seen = False
+
+        for model_payload in models:
+            run_stats = self._resolve_model_run_statistics(model_payload)
+            if run_stats:
+                aggregate["pages_attempted"] += self._safe_int(run_stats.get("pages_attempted"))
+                aggregate["pages_succeeded"] += self._safe_int(run_stats.get("pages_succeeded"))
+                aggregate["pages_failed"] += self._safe_int(run_stats.get("pages_failed"))
+                aggregate["processing_time_seconds"] += float(run_stats.get("processing_time_seconds", 0.0))
+                aggregate["ocr_request_time_seconds"] += float(run_stats.get("ocr_request_time_seconds", 0.0))
+                self._merge_token_usage(aggregate["token_usage"], run_stats.get("token_usage", {}))
+
+            runtime_value = self._safe_float(model_payload.get("runtime_seconds"))
+            if runtime_value <= 0:
+                runtime_value = self._safe_float(run_stats.get("runtime_seconds"))
+            if runtime_value <= 0:
+                runtime_from_metadata = self._resolve_model_run_runtime_seconds(model_payload)
+                if runtime_from_metadata is not None:
+                    runtime_value = runtime_from_metadata
+            if runtime_value > 0:
+                runtime_seconds += runtime_value
+                runtime_seen = True
+
+        return self._finalize_metrics(aggregate, runtime_seconds=runtime_seconds if runtime_seen else None)
+
+    def _merge_job_metadata_payloads(
+        self,
+        existing_payload: dict[str, Any],
+        current_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        existing_models = existing_payload.get("models")
+        current_models = current_payload.get("models")
+        merged_models_raw = self._merge_job_models(
+            existing_models if isinstance(existing_models, list) else [],
+            current_models if isinstance(current_models, list) else [],
+        )
+        merged_models = [
+            self._normalize_job_metadata_model_entry(item)
+            for item in merged_models_raw
+            if isinstance(item, dict)
+        ]
+
+        total_pages = sum(self._safe_int(item.get("total_pages")) for item in merged_models if isinstance(item, dict))
+        completed_pages = sum(self._safe_int(item.get("completed_pages")) for item in merged_models if isinstance(item, dict))
+        progress_ratio = (completed_pages / total_pages) if total_pages > 0 else 0.0
+
+        fallback_status = str(current_payload.get("status") or existing_payload.get("status") or RunStatus.QUEUED.value)
+        merged_status = self._merge_job_status_from_models(merged_models, fallback_status)
+
+        model_started = [item.get("started_at") for item in merged_models if isinstance(item, dict)]
+        model_ended = [item.get("ended_at") for item in merged_models if isinstance(item, dict)]
+
+        created_at = self._timestamp_min([existing_payload.get("created_at"), current_payload.get("created_at")])
+        started_at = self._timestamp_min([existing_payload.get("started_at"), current_payload.get("started_at"), *model_started])
+
+        if self._metadata_status_is_active(merged_status):
+            ended_at = None
+        else:
+            ended_at = self._timestamp_max([existing_payload.get("ended_at"), current_payload.get("ended_at"), *model_ended])
+
+        merged = {
+            "job_id": current_payload.get("job_id") or existing_payload.get("job_id"),
+            "title": current_payload.get("title") or existing_payload.get("title"),
+            "input_path": current_payload.get("input_path") or existing_payload.get("input_path"),
+            "status": merged_status,
+            "created_at": created_at,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "prompt": current_payload.get("prompt") or existing_payload.get("prompt"),
+            "total_pages_all_models": total_pages,
+            "completed_pages_all_models": completed_pages,
+            "progress_ratio": progress_ratio,
+            "models": merged_models,
+            "statistics": self._aggregate_job_statistics_from_models(merged_models),
+        }
+
+        if not merged["statistics"]:
+            prior = current_payload.get("statistics") if isinstance(current_payload.get("statistics"), dict) else {}
+            if not prior and isinstance(existing_payload.get("statistics"), dict):
+                prior = existing_payload["statistics"]
+            merged["statistics"] = prior
+
+        if merged["created_at"] is None:
+            merged["created_at"] = datetime.now(UTC).isoformat()
+
+        return merged
+
+    def _serialize_run_for_job_metadata(self, job_id: str, run: ModelRunProgress) -> dict[str, Any]:
         payload = run.model_dump(mode="json")
         payload["output_dir"] = self._to_project_relative_path(payload.get("output_dir"))
         payload["current_pdf"] = self._to_project_relative_path(payload.get("current_pdf"))
@@ -90,6 +378,10 @@ class JobManager:
                 for rel in (self._to_project_relative_path(item) for item in source_files)
                 if rel
             ]
+
+        payload["runtime_seconds"] = self._run_runtime_seconds(run)
+        payload["eta_seconds"] = self.estimate_run_eta_seconds(run)
+        payload["statistics"] = self._run_statistics(job_id, run.run_id)
         return payload
 
     @staticmethod
@@ -117,6 +409,13 @@ class JobManager:
             return int(value)
         except Exception:  # noqa: BLE001
             return 0
+
+    @staticmethod
+    def _safe_float(value: Any) -> float:
+        try:
+            return float(value)
+        except Exception:  # noqa: BLE001
+            return 0.0
 
     @staticmethod
     def _optional_int(value: Any) -> int | None:
@@ -283,12 +582,7 @@ class JobManager:
                 "job_id": job_id,
                 "title": title,
                 "input_path": self._to_project_relative_path(input_path),
-                "created_at": datetime.now(UTC).isoformat(),
                 "prompt": request.prompt,
-                "models": [
-                    {k: v for k, v in model.model_dump().items() if k != "api_key"}
-                    for model in request.models
-                ],
             },
         )
 
@@ -493,8 +787,9 @@ class JobManager:
 
     def _persist_job_metadata(self, job_id: str) -> None:
         job = self._jobs[job_id]
+        metadata_path = Path(job.metadata_path)
 
-        payload = {
+        current_payload = {
             "job_id": job.job_id,
             "title": job.title,
             "input_path": self._to_project_relative_path(job.input_path),
@@ -506,10 +801,14 @@ class JobManager:
             "total_pages_all_models": job.total_pages_all_models,
             "completed_pages_all_models": job.completed_pages_all_models,
             "progress_ratio": job.progress_ratio(),
-            "models": [self._serialize_run_for_job_metadata(run) for run in job.models],
+            "models": [self._serialize_run_for_job_metadata(job_id, run) for run in job.models],
             "statistics": self._job_statistics(job),
         }
-        write_json(Path(job.metadata_path), payload)
+
+        with self._job_metadata_file_lock(metadata_path):
+            existing_payload = self._read_json_if_exists(metadata_path)
+            merged_payload = self._merge_job_metadata_payloads(existing_payload, current_payload)
+            write_json(metadata_path, merged_payload)
 
     def _persist_run_metadata(
         self,

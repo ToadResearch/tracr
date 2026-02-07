@@ -400,8 +400,9 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
                             yield Input(id="local-max-len", placeholder="optional")
 
                         with Horizontal(classes="row"):
-                            yield Label("Batch size", classes="label")
+                            yield Label("Max concurrent requests", classes="label")
                             yield Input(value="8", id="local-batch-size")
+                        yield Static("Controls in-flight OCR requests; progress updates are incremental as requests finish.", classes="help")
 
                     with Vertical(id="page-review", classes="wizard-page hidden"):
                         yield Label("Step: Review & Launch", classes="section-title")
@@ -569,7 +570,7 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
                     f"dp={model.get('data_parallel_size')} "
                     f"gpu_mem={model.get('gpu_memory_utilization')} "
                     f"max_len={model.get('max_model_len')} "
-                    f"batch={model.get('max_concurrent_requests')}"
+                    f"concurrency={model.get('max_concurrent_requests')}"
                 )
 
             table.add_row(
@@ -763,7 +764,7 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
             if batch_size <= 0:
                 raise ValueError
         except Exception:
-            self.notify("Batch size must be a positive integer", severity="error")
+            self.notify("Max concurrent requests must be a positive integer", severity="error")
             self.query_one("#local-batch-size", Input).focus()
             return False
 
@@ -934,7 +935,7 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
                     f"- {model['model']} [local] tp={model.get('tensor_parallel_size')} "
                     f"dp={model.get('data_parallel_size')} "
                     f"gpu_mem={model.get('gpu_memory_utilization')} max_len={model.get('max_model_len')} "
-                    f"batch={model.get('max_concurrent_requests')}"
+                    f"concurrency={model.get('max_concurrent_requests')}"
                 )
 
         lines.append("")

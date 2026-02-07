@@ -81,7 +81,10 @@ def head_html() -> str:
 
       /* Viewer grid */
       .viewer-grid { height: 76vh; }
-      .elo-compare-panels { min-height: 250px; max-height: 45vh; }
+
+      /* ELO arena grid */
+      .elo-arena-grid { height: 68vh; }
+      .elo-scroll-panel { min-height: 0; }
 
       /* PDF panel: image starts fit-to-height, zoom multiplies from there */
       .pdf-scroll-area {
@@ -201,7 +204,7 @@ def shared_js() -> str:
       const MD_ZOOM_MIN = 50, MD_ZOOM_MAX = 200, MD_ZOOM_STEP = 5;
       const state = {
         viewer: { jobs: [], outputs: [], rendered: true, jobId: null, outputId: null, pageNumber: null },
-        elo: { jobs: [], pair: null, rendered: false, jobId: null },
+        elo: { jobs: [], pair: null, rendered: false, jobId: null, _cols: 3 },
         pdfZoom: 100,
         mdZoom: 100
       };
@@ -431,6 +434,7 @@ def init_js() -> str:
             else if (e.key === "4") { e.preventDefault(); submitEloVote("both_bad"); }
             else if (e.key === "s" || e.key === "S") { e.preventDefault(); submitEloVote("skip"); }
             else if (e.key === "n" || e.key === "N") { e.preventDefault(); loadNextEloPair(); }
+            else if (e.key === "r" || e.key === "R") { e.preventDefault(); state.elo.rendered = !state.elo.rendered; renderEloMarkdown(state.elo.pair); }
           }
         });
 
@@ -439,8 +443,11 @@ def init_js() -> str:
         byId("viewer-image").addEventListener("error", () => showToast("PDF preview unavailable", "error"));
 
         byId("elo-next").addEventListener("click", () => loadNextEloPair());
+        byId("elo-next-bottom").addEventListener("click", () => loadNextEloPair());
         byId("elo-toggle-mode").addEventListener("click", () => { state.elo.rendered = !state.elo.rendered; if (state.elo.pair) renderEloMarkdown(state.elo.pair); });
         document.querySelectorAll("[data-vote]").forEach(b => b.addEventListener("click", () => submitEloVote(b.dataset.vote)));
+        byId("elo-image").addEventListener("error", () => { if (state.elo.pair) eloSetColumns(2); });
+        byId("elo-image").addEventListener("load", () => { if (state.elo.pair && state.elo._cols !== 3) eloSetColumns(3); });
       }
 
       async function init() {
