@@ -53,6 +53,8 @@ For local vLLM mode:
 uv sync --extra local
 ```
 
+Note: local vLLM dependencies currently require Python `3.11`-`3.13` (not `3.14` yet due upstream `ray` wheel availability).
+
 For web reviewer + ELO markdown rendering:
 
 ```bash

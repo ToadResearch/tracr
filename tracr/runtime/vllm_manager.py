@@ -91,6 +91,17 @@ class VLLMServerManager:
         for gpu_id in gpu_ids:
             self._allocated_gpu_ids.discard(gpu_id)
 
+    @staticmethod
+    def _tail_log_lines(path: Path, max_lines: int = 40) -> str:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return ""
+        lines = content.splitlines()
+        if not lines:
+            return ""
+        return "\n".join(lines[-max_lines:])
+
     def acquire_server(
         self,
         *,
@@ -190,17 +201,24 @@ class VLLMServerManager:
                 self._release_gpu_ids(gpu_ids)
                 self._condition.notify_all()
             raise RuntimeError("vLLM CLI executable not found in PATH. Install with: uv sync --extra local") from exc
+        finally:
+            # Child process holds the file descriptor; close parent handle.
+            log_file.close()
 
         base_url = f"http://127.0.0.1:{port}/v1"
 
         try:
             self._wait_for_server_ready(base_url, process, timeout_seconds=900.0)
-        except Exception:
+        except Exception as exc:
             process.terminate()
             with self._condition:
                 self._release_gpu_ids(gpu_ids)
                 self._condition.notify_all()
-            raise
+            recent_logs = self._tail_log_lines(log_path)
+            detail = f"{exc}. vLLM log: {log_path}"
+            if recent_logs:
+                detail += f"\nRecent log lines:\n{recent_logs}"
+            raise RuntimeError(detail) from exc
 
         handle = ServerHandle(
             key=key,
