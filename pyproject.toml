@@ -1,0 +1,52 @@
+[project]
+name = "tracr"
+version = "0.1.0"
+description = "TRACR: cloud-ready OCR orchestration"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "openai>=1.58.0",
+  "pillow>=10.4.0",
+  "pydantic>=2.10.0",
+  "pydantic-settings>=2.7.0",
+  "pyyaml>=6.0.2",
+  "python-dotenv>=1.0.1",
+  "pypdfium2>=4.30.0",
+  "rich>=13.9.4",
+  "textual>=0.89.1",
+  "uvicorn[standard]>=0.32.1",
+]
+
+[project.optional-dependencies]
+web = [
+  "markdown>=3.7",
+]
+local = [
+  "vllm>=0.7.2",
+  "pynvml>=12.0.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.4",
+  "pytest-asyncio>=0.24.0",
+  "ruff>=0.8.4",
+]
+
+[project.scripts]
+tracr = "tracr.cli:main"
+web = "tracr.web_server:main"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tracr"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

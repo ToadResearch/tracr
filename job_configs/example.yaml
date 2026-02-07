@@ -1,0 +1,28 @@
+job_id: comparison-batch
+title: OCR compare run
+input_path: inputs/main.pdf
+prompt: |
+  You are an OCR assistant. Extract all visible text from this PDF page and return clean markdown.
+  Preserve headings, lists, and tables when possible. Do not add commentary.
+max_tokens: 2048
+temperature: 0.0
+models:
+  - model: gemini-3-flash-preview
+    mode: api
+    provider: gemini
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    api_key_env: GEMINI_API_KEY
+  - model: gpt-5-mini
+    mode: api
+    provider: openai
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+  - model: lightonai/LightOnOCR-2-1B
+    mode: local
+    tensor_parallel_size: 1
+    data_parallel_size: 1
+    gpu_memory_utilization: 0.9
+    max_model_len: 16384
+    max_concurrent_requests: 8
+    extra_vllm_args:
+      - --enforce-eager
