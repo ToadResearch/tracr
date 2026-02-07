@@ -22,6 +22,31 @@ def elo_section_html() -> str:
               </div>
             </div>
           </div>
+          <!-- Mode toggle: Arena / Browse -->
+          <div class="flex flex-col gap-1">
+            <label class="text-[10px] font-semibold text-g-muted uppercase tracking-widest">Mode</label>
+            <button id="elo-mode-toggle" class="h-[34px] px-3 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-400 text-xs font-semibold cursor-pointer hover:bg-amber-500/20 transition-all whitespace-nowrap">Arena</button>
+          </div>
+
+          <!-- Page nav (browse mode only) -->
+          <div id="elo-page-nav" class="hidden contents">
+            <div class="flex flex-col gap-1">
+              <label class="text-[10px] font-semibold text-g-muted uppercase tracking-widest">Page</label>
+              <div class="flex items-center gap-1">
+                <button id="elo-prev" class="h-[34px] w-[34px] rounded-lg border border-g-border bg-g-surface text-g-dim text-base flex items-center justify-center cursor-pointer hover:bg-g-panel hover:border-g-hover transition-all active:scale-95" title="Previous (Left arrow)">&larr;</button>
+                <span id="elo-page-indicator" class="h-[34px] flex items-center px-3 text-xs text-g-text bg-g-surface border border-g-border rounded-lg tabular-nums select-none min-w-[80px] justify-center">-- / --</span>
+                <button id="elo-next-page" class="h-[34px] w-[34px] rounded-lg border border-g-border bg-g-surface text-g-dim text-base flex items-center justify-center cursor-pointer hover:bg-g-panel hover:border-g-hover transition-all active:scale-95" title="Next (Right arrow)">&rarr;</button>
+              </div>
+            </div>
+            <div class="flex flex-col gap-1">
+              <label class="text-[10px] font-semibold text-g-muted uppercase tracking-widest">Go to</label>
+              <div class="flex gap-1">
+                <input id="elo-page-jump" type="number" min="1" step="1" placeholder="#" class="h-[34px] w-16 rounded-lg border border-g-border bg-g-surface text-g-text text-[13px] font-sans text-center focus:outline-none focus:border-blue-500 transition-colors appearance-none" />
+                <button id="elo-page-go" class="h-[34px] px-2.5 rounded-lg border border-g-border bg-g-surface text-g-text text-xs font-medium cursor-pointer hover:bg-g-panel hover:border-g-hover transition-all active:scale-95">Go</button>
+              </div>
+            </div>
+          </div>
+
           <div class="flex flex-col gap-1">
             <label class="text-[10px] font-semibold text-g-muted uppercase tracking-widest">&nbsp;</label>
             <span id="elo-pair-meta" class="h-[34px] flex items-center text-xs text-g-dim bg-g-raised px-3 rounded-lg tabular-nums select-none">--</span>
@@ -161,6 +186,17 @@ def elo_section_html() -> str:
             <kbd class="inline-flex items-center h-[18px] px-1 text-[10px] font-sans text-g-muted bg-g-raised border border-g-border rounded font-medium">R</kbd>
             <span>raw/rendered</span>
           </div>
+          <span class="w-1 h-1 rounded-full bg-g-border"></span>
+          <div class="flex items-center gap-1.5 text-g-muted">
+            <kbd class="inline-flex items-center h-[18px] px-1 text-[10px] font-sans text-g-muted bg-g-raised border border-g-border rounded font-medium">&larr;</kbd>
+            <kbd class="inline-flex items-center h-[18px] px-1 text-[10px] font-sans text-g-muted bg-g-raised border border-g-border rounded font-medium">&rarr;</kbd>
+            <span>navigate (browse)</span>
+          </div>
+          <span class="w-1 h-1 rounded-full bg-g-border"></span>
+          <div class="flex items-center gap-1.5 text-g-muted">
+            <kbd class="inline-flex items-center h-[18px] px-1 text-[10px] font-sans text-g-muted bg-g-raised border border-g-border rounded font-medium">B</kbd>
+            <span>arena/browse</span>
+          </div>
         </div>
       </section>"""
 
@@ -248,30 +284,165 @@ def elo_js() -> str:
         }
       }
 
+      /* ============ Display a loaded pair (shared by arena + browse) ============ */
+      function eloDisplayPair(data) {
+        renderRatings(data.ratings || []);
+        if (!data.has_pair) {
+          state.elo.pair = null;
+          byId("elo-pair-meta").textContent = "--";
+          eloShowEmpty(data.message || "No comparable pages found.");
+          eloUpdatePageIndicator();
+          return;
+        }
+        state.elo.pair = data.pair;
+        eloShowArena();
+        eloSetColumns(3);
+        const img = byId("elo-image");
+        img.src = data.pair.image_url;
+        byId("elo-left-title").textContent = state.elo.arenaMode ? "Model A" : data.pair.left.model_label;
+        byId("elo-right-title").textContent = state.elo.arenaMode ? "Model B" : data.pair.right.model_label;
+        byId("elo-pair-meta").textContent = `${data.pair.pdf_label} \u00b7 p${data.pair.page_number}`;
+        byId("elo-page-badge").textContent = `p${data.pair.page_number}`;
+        renderEloMarkdown(data.pair);
+        /* Scroll panels to top */
+        const ls = byId("elo-left-scroll"), rs = byId("elo-right-scroll"), ps = byId("elo-pdf-scroll");
+        if (ls) ls.scrollTop = 0; if (rs) rs.scrollTop = 0; if (ps) ps.scrollTop = 0;
+      }
+
       async function loadNextEloPair() {
         if (!state.elo.jobId) return;
         setSpinner("elo-spinner", true);
         try {
           const data = await fetchJSON(`/api/web/elo/jobs/${encodeURIComponent(state.elo.jobId)}/next`);
-          renderRatings(data.ratings || []);
-          if (!data.has_pair) {
-            state.elo.pair = null;
-            byId("elo-pair-meta").textContent = "--";
-            eloShowEmpty(data.message || "No comparable pages found.");
-            return;
+          /* In arena mode, randomly swap sides so blind voting is fair */
+          if (state.elo.arenaMode && data.has_pair && Math.random() < 0.5) {
+            const tmp = data.pair.left; data.pair.left = data.pair.right; data.pair.right = tmp;
           }
-          state.elo.pair = data.pair;
-          eloShowArena();
-          /* Reset to 3-col; image error handler will drop to 2-col if needed */
-          eloSetColumns(3);
-          const img = byId("elo-image");
-          img.src = data.pair.image_url;
-          byId("elo-left-title").textContent = data.pair.left.model_label;
-          byId("elo-right-title").textContent = data.pair.right.model_label;
-          byId("elo-pair-meta").textContent = `${data.pair.pdf_label} \u00b7 p${data.pair.page_number}`;
-          byId("elo-page-badge").textContent = `p${data.pair.page_number}`;
-          renderEloMarkdown(data.pair);
+          eloDisplayPair(data);
+          /* If we got a pair and we're in browse mode, seed the browse pages list */
+          if (data.has_pair && !state.elo.arenaMode) {
+            await eloEnterBrowse();
+          } else if (data.has_pair) {
+            /* Remember models for potential browse switch */
+            state.elo.browseModels = {
+              left_model_slug: data.pair.left.model_slug,
+              left_run_number: data.pair.left.run_number,
+              right_model_slug: data.pair.right.model_slug,
+              right_run_number: data.pair.right.run_number,
+            };
+            state.elo.browsePages = [];
+            state.elo.browseIdx = -1;
+          }
         } finally { setSpinner("elo-spinner", false); }
+      }
+
+      /* ============ Browse Mode ============ */
+      function eloUpdatePageIndicator() {
+        const el = byId("elo-page-indicator");
+        if (!el) return;
+        const pages = state.elo.browsePages;
+        const idx = state.elo.browseIdx;
+        if (!pages.length || idx < 0) { el.textContent = "-- / --"; return; }
+        el.textContent = `${idx + 1} / ${pages.length}`;
+      }
+
+      async function eloEnterBrowse() {
+        if (!state.elo.pair) return;
+        const p = state.elo.pair;
+        state.elo.browseModels = {
+          left_model_slug: p.left.model_slug, left_run_number: p.left.run_number,
+          right_model_slug: p.right.model_slug, right_run_number: p.right.run_number,
+        };
+        /* Fetch browse data for current page to get shared_pages list */
+        const m = state.elo.browseModels;
+        const url = `/api/web/elo/jobs/${encodeURIComponent(state.elo.jobId)}/browse`
+          + `?left_model_slug=${encodeURIComponent(m.left_model_slug)}`
+          + `&right_model_slug=${encodeURIComponent(m.right_model_slug)}`
+          + `&left_run_number=${m.left_run_number}`
+          + `&right_run_number=${m.right_run_number}`
+          + `&pdf_slug=${encodeURIComponent(p.pdf_slug)}`
+          + `&page_number=${p.page_number}`;
+        const data = await fetchJSON(url);
+        state.elo.browsePages = data.shared_pages || [];
+        /* Find current page in the list */
+        state.elo.browseIdx = state.elo.browsePages.findIndex(
+          sp => sp.pdf_slug === p.pdf_slug && sp.page_number === p.page_number
+        );
+        if (state.elo.browseIdx < 0 && state.elo.browsePages.length > 0) state.elo.browseIdx = 0;
+        eloUpdatePageIndicator();
+      }
+
+      async function eloLoadBrowsePage(idx) {
+        const pages = state.elo.browsePages;
+        if (!pages.length || idx < 0 || idx >= pages.length) return;
+        const m = state.elo.browseModels;
+        if (!m) return;
+        state.elo.browseIdx = idx;
+        setSpinner("elo-spinner", true);
+        try {
+          const target = pages[idx];
+          const url = `/api/web/elo/jobs/${encodeURIComponent(state.elo.jobId)}/browse`
+            + `?left_model_slug=${encodeURIComponent(m.left_model_slug)}`
+            + `&right_model_slug=${encodeURIComponent(m.right_model_slug)}`
+            + `&left_run_number=${m.left_run_number}`
+            + `&right_run_number=${m.right_run_number}`
+            + `&pdf_slug=${encodeURIComponent(target.pdf_slug)}`
+            + `&page_number=${target.page_number}`;
+          const data = await fetchJSON(url);
+          eloDisplayPair(data);
+          eloUpdatePageIndicator();
+        } finally { setSpinner("elo-spinner", false); }
+      }
+
+      function eloShiftPage(delta) {
+        const pages = state.elo.browsePages;
+        if (!pages.length) return;
+        const idx = state.elo.browseIdx;
+        const next = Math.max(0, Math.min(pages.length - 1, idx + delta));
+        if (next === idx) return;
+        eloLoadBrowsePage(next);
+      }
+
+      function eloJumpToPage(pageNum) {
+        const target = Number(pageNum);
+        if (!Number.isFinite(target)) return;
+        const pages = state.elo.browsePages;
+        const idx = pages.findIndex(sp => sp.page_number === target);
+        if (idx < 0) { showToast(`Page ${target} not in shared pages`, "error"); return; }
+        eloLoadBrowsePage(idx);
+      }
+
+      function eloToggleMode() {
+        state.elo.arenaMode = !state.elo.arenaMode;
+        const btn = byId("elo-mode-toggle");
+        const nav = byId("elo-page-nav");
+        if (state.elo.arenaMode) {
+          btn.textContent = "Arena";
+          btn.className = "h-[34px] px-3 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-400 text-xs font-semibold cursor-pointer hover:bg-amber-500/20 transition-all whitespace-nowrap";
+          nav.classList.add("hidden");
+          nav.classList.remove("contents");
+          /* Re-hide model names */
+          if (state.elo.pair) {
+            byId("elo-left-title").textContent = "Model A";
+            byId("elo-right-title").textContent = "Model B";
+          }
+        } else {
+          btn.textContent = "Browse";
+          btn.className = "h-[34px] px-3 rounded-lg border border-blue-500/40 bg-blue-500/10 text-blue-400 text-xs font-semibold cursor-pointer hover:bg-blue-500/20 transition-all whitespace-nowrap";
+          nav.classList.remove("hidden");
+          nav.classList.add("contents");
+          /* Reveal model names */
+          if (state.elo.pair) {
+            byId("elo-left-title").textContent = state.elo.pair.left.model_label;
+            byId("elo-right-title").textContent = state.elo.pair.right.model_label;
+          }
+          /* Seed browse pages if we have a pair */
+          if (state.elo.pair && !state.elo.browsePages.length) {
+            eloEnterBrowse().catch(err => showToast(err.message, "error"));
+          } else {
+            eloUpdatePageIndicator();
+          }
+        }
       }
 
       async function submitEloVote(choice) {

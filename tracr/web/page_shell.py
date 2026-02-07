@@ -204,7 +204,7 @@ def shared_js() -> str:
       const MD_ZOOM_MIN = 50, MD_ZOOM_MAX = 200, MD_ZOOM_STEP = 5;
       const state = {
         viewer: { jobs: [], outputs: [], rendered: true, jobId: null, outputId: null, pageNumber: null },
-        elo: { jobs: [], pair: null, rendered: false, jobId: null, _cols: 3 },
+        elo: { jobs: [], pair: null, rendered: false, jobId: null, _cols: 3, arenaMode: true, browsePages: [], browseIdx: -1, browseModels: null },
         pdfZoom: 100,
         mdZoom: 100
       };
@@ -427,14 +427,23 @@ def init_js() -> str:
             else if (e.key === "0") { e.preventDefault(); applyPdfZoom(100); applyMdZoom(100); }
           }
 
-          if (byId("elo").classList.contains("active") && state.elo.pair) {
-            if (e.key === "1") { e.preventDefault(); submitEloVote("left_better"); }
-            else if (e.key === "2") { e.preventDefault(); submitEloVote("right_better"); }
-            else if (e.key === "3") { e.preventDefault(); submitEloVote("both_good"); }
-            else if (e.key === "4") { e.preventDefault(); submitEloVote("both_bad"); }
-            else if (e.key === "s" || e.key === "S") { e.preventDefault(); submitEloVote("skip"); }
-            else if (e.key === "n" || e.key === "N") { e.preventDefault(); loadNextEloPair(); }
-            else if (e.key === "r" || e.key === "R") { e.preventDefault(); state.elo.rendered = !state.elo.rendered; renderEloMarkdown(state.elo.pair); }
+          if (byId("elo").classList.contains("active")) {
+            /* B toggles arena/browse anywhere in ELO */
+            if (e.key === "b" || e.key === "B") { e.preventDefault(); eloToggleMode(); }
+            /* Browse mode: arrow keys navigate pages */
+            else if (!state.elo.arenaMode && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+              e.preventDefault(); eloShiftPage(e.key === "ArrowLeft" ? -1 : 1);
+            }
+            /* Voting/actions require a pair */
+            else if (state.elo.pair) {
+              if (e.key === "1") { e.preventDefault(); submitEloVote("left_better"); }
+              else if (e.key === "2") { e.preventDefault(); submitEloVote("right_better"); }
+              else if (e.key === "3") { e.preventDefault(); submitEloVote("both_good"); }
+              else if (e.key === "4") { e.preventDefault(); submitEloVote("both_bad"); }
+              else if (e.key === "s" || e.key === "S") { e.preventDefault(); submitEloVote("skip"); }
+              else if (e.key === "n" || e.key === "N") { e.preventDefault(); loadNextEloPair(); }
+              else if (e.key === "r" || e.key === "R") { e.preventDefault(); state.elo.rendered = !state.elo.rendered; renderEloMarkdown(state.elo.pair); }
+            }
           }
         });
 
@@ -445,6 +454,11 @@ def init_js() -> str:
         byId("elo-next").addEventListener("click", () => loadNextEloPair());
         byId("elo-next-bottom").addEventListener("click", () => loadNextEloPair());
         byId("elo-toggle-mode").addEventListener("click", () => { state.elo.rendered = !state.elo.rendered; if (state.elo.pair) renderEloMarkdown(state.elo.pair); });
+        byId("elo-mode-toggle").addEventListener("click", () => eloToggleMode());
+        byId("elo-prev").addEventListener("click", () => eloShiftPage(-1));
+        byId("elo-next-page").addEventListener("click", () => eloShiftPage(1));
+        byId("elo-page-go").addEventListener("click", () => eloJumpToPage(byId("elo-page-jump").value));
+        byId("elo-page-jump").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); eloJumpToPage(e.target.value); } });
         document.querySelectorAll("[data-vote]").forEach(b => b.addEventListener("click", () => submitEloVote(b.dataset.vote)));
         byId("elo-image").addEventListener("error", () => { if (state.elo.pair) eloSetColumns(2); });
         byId("elo-image").addEventListener("load", () => { if (state.elo.pair && state.elo._cols !== 3) eloSetColumns(3); });

@@ -18,7 +18,7 @@
   ·
   <a href="#web-reviewer--elo">Web Reviewer + ELO</a>
   ·
-  <a href="docs/ARCHITECTURE.md">Architecture</a>
+  <a href="AGENTS.md">Contributor Notes</a>
 </p>
 
 Cloud-ready OCR orchestration service with:
@@ -26,22 +26,32 @@ Cloud-ready OCR orchestration service with:
 - Local OCR model execution via vLLM (optional dependency)
 - Textual/Rich TUI for launching and monitoring jobs
 - Structured outputs + metadata for multi-model runs
+- Built-in web reviewer + ELO comparison workflow
 
-This design follows the same orchestration pattern used in `privasis`: a unified OpenAI-compatible client, optional external/local vLLM runtime, and parallel worker-driven jobs.
+TRACR uses a unified OpenAI-compatible client for provider swaps, optional local vLLM runtime management, and parallel model-run orchestration.
 
-Detailed architecture notes: `docs/ARCHITECTURE.md`.
+Contributor architecture and endpoint notes: `AGENTS.md`.
+
+## Screenshots
 
 
-### Web Viewer
+#### Web Viewer
 
 <p align="center">
   <img src="media/web-viewer.png" alt="TRACR web viewer screenshot" width="100%" />
 </p>
 
+#### ELO Viewer
 
-This implementation uses Python `textual` + `rich` so the TUI can share runtime state directly with the Python service, making form-driven launch flows, HTTP integration, and live refresh easier to iterate.
+<p align="center">
+  <img src="media/elo-viewer.png" alt="TRACR ELO viewer screenshot" width="100%" />
+</p>
 
-## Install (uv)
+
+
+## Installation
+
+First, clone the repo and enter it.
 
 ```bash
 uv sync
@@ -100,8 +110,12 @@ uv run tracr tui
 Start web reviewer + ELO arena:
 
 ```bash
+uv run tracr web
+# or
 uv run web
 ```
+
+Use `--no-open` to skip auto-opening a browser tab.
 
 Launch flow is keyboard-first and multi-step (wizard pages), with no mouse required.
 Set `Job id` in the wizard to use that exact `outputs/<job_id>` folder (no timestamp suffix).
@@ -132,6 +146,12 @@ Run all tests:
 
 ```bash
 uv run tracr test
+```
+
+Pass through pytest args:
+
+```bash
+uv run tracr test -- -k output_layout
 ```
 
 ## Inputs
@@ -230,14 +250,21 @@ If the same `job_id` is reused, new model runs increment `run_num` and append un
 TRACR includes a dedicated web interface at `/web`:
 - **Output Viewer**: choose a job/output, inspect original PDF page side-by-side with extracted markdown
 - **Markdown mode toggle**: switch between rendered markdown and raw markdown text
-- **ELO Arena**: compare two model outputs for the same PDF page and vote
+- **ELO Arena mode**: blind compare model outputs as `Model A` vs `Model B` (sides may swap between pairs)
+- **ELO Browse mode**: lock a model pair and step across shared pages for targeted comparisons
 
-ELO vote actions:
-- `Left Better`
-- `Right Better`
-- `Both Good`
-- `Both Bad`
-- `Skip`
+ELO vote controls:
+- `1`: `Left`
+- `2`: `Right`
+- `3`: `Tie`
+- `4`: `Both Bad`
+- `S`: `Skip`
+- `N`: `Next Pair`
+
+Other ELO controls:
+- `R`: toggle raw/rendered markdown
+- `B`: toggle Arena/Browse mode
+- `Left/Right Arrow`: move pages in Browse mode
 
 ELO artifacts are saved under:
 
@@ -247,32 +274,4 @@ outputs/<job_id>/elo/
 
 including rating state (`ratings.json`) and vote history (`votes.jsonl`).
 
-## Service Endpoints
-
-- `GET /health`
-- `GET /api/presets`
-- `GET /api/local-default-models`
-- `GET /api/inputs`
-- `GET /api/job-configs`
-- `POST /api/job-configs/load`
-- `POST /api/jobs`
-- `GET /api/jobs`
-- `GET /api/jobs/{job_id}`
-- `POST /api/jobs/{job_id}/cancel`
-- `POST /api/jobs/{job_id}/dismiss`
-- `GET /api/jobs/{job_id}/output-pages`
-- `GET /api/jobs/{job_id}/output-pages/{page_index}`
-- `GET /api/outputs/tree`
-- `GET /api/outputs/file`
-- `GET /web`
-- `GET /api/web/jobs`
-- `GET /api/web/jobs/{job_id}/outputs`
-- `GET /api/web/jobs/{job_id}/viewer/page`
-- `GET /api/web/jobs/{job_id}/viewer/page-image`
-- `GET /api/web/elo/jobs`
-- `GET /api/web/elo/jobs/{job_id}/next`
-- `GET /api/web/elo/jobs/{job_id}/ratings`
-- `POST /api/web/elo/jobs/{job_id}/vote`
-- `GET /api/system/gpus`
-- `GET /api/providers/{provider_key}/key-status`
-- `POST /api/proxy/chat/completions` (generic OpenAI-compatible request + save to `outputs/proxy_logs/`)
+Contributor-facing architecture notes and the full endpoint inventory are maintained in `AGENTS.md`.

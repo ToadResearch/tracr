@@ -462,6 +462,92 @@ def build_web_router(*, settings: Settings, manager: JobManager, elo_manager: El
             "ratings": ratings,
         }
 
+    @router.get("/api/web/elo/jobs/{job_id}/browse")
+    def web_elo_browse(
+        job_id: str,
+        left_model_slug: str,
+        right_model_slug: str,
+        left_run_number: int,
+        right_run_number: int,
+        pdf_slug: str | None = None,
+        page_number: int | None = None,
+    ) -> dict[str, Any]:
+        candidates = _elo_pair_candidates(job_id)
+        model_labels = candidates["model_labels"]
+        grouped = candidates["grouped"]
+        ratings = elo_manager.ratings_table(job_id, model_labels=model_labels)
+
+        shared_pages: list[dict[str, Any]] = []
+        page_outputs: dict[tuple[str, int], tuple[dict[str, Any], dict[str, Any]]] = {}
+
+        for key, entries in grouped.items():
+            left_entry = None
+            right_entry = None
+            for entry in entries:
+                if str(entry["model_slug"]) == left_model_slug and int(entry["run_number"]) == left_run_number:
+                    left_entry = entry
+                elif str(entry["model_slug"]) == right_model_slug and int(entry["run_number"]) == right_run_number:
+                    right_entry = entry
+            if left_entry is not None and right_entry is not None:
+                shared_pages.append({"pdf_slug": str(key[0]), "page_number": int(key[1])})
+                page_outputs[key] = (left_entry, right_entry)
+
+        shared_pages.sort(key=lambda p: (p["pdf_slug"], p["page_number"]))
+
+        if not shared_pages:
+            return {
+                "job_id": job_id,
+                "job_title": candidates["title"],
+                "has_pair": False,
+                "message": "No shared pages between these models.",
+                "ratings": ratings,
+                "shared_pages": [],
+            }
+
+        target_slug = pdf_slug or shared_pages[0]["pdf_slug"]
+        target_page = page_number if page_number is not None else shared_pages[0]["page_number"]
+        target_key = (target_slug, target_page)
+
+        if target_key not in page_outputs:
+            target_slug = shared_pages[0]["pdf_slug"]
+            target_page = shared_pages[0]["page_number"]
+            target_key = (target_slug, target_page)
+
+        left_out, right_out = page_outputs[target_key]
+        left_md = (Path(left_out["pdf_dir"]) / f"{target_page}.md").read_text(encoding="utf-8")
+        right_md = (Path(right_out["pdf_dir"]) / f"{target_page}.md").read_text(encoding="utf-8")
+
+        return {
+            "job_id": job_id,
+            "job_title": candidates["title"],
+            "has_pair": True,
+            "pair": {
+                "pdf_slug": target_slug,
+                "pdf_label": str(left_out["pdf_label"]),
+                "page_number": target_page,
+                "image_url": (
+                    f"/api/web/jobs/{job_id}/viewer/page-image?"
+                    f"output_id={left_out['output_id']}&page_number={target_page}"
+                ),
+                "left": {
+                    "model_slug": left_out["model_slug"],
+                    "model_label": left_out["model_label"],
+                    "run_number": left_out["run_number"],
+                    "markdown_raw": left_md,
+                    "markdown_html": _render_markdown(left_md),
+                },
+                "right": {
+                    "model_slug": right_out["model_slug"],
+                    "model_label": right_out["model_label"],
+                    "run_number": right_out["run_number"],
+                    "markdown_raw": right_md,
+                    "markdown_html": _render_markdown(right_md),
+                },
+            },
+            "ratings": ratings,
+            "shared_pages": shared_pages,
+        }
+
     @router.post("/api/web/elo/jobs/{job_id}/vote")
     def web_elo_vote(job_id: str, payload: EloVoteRequest) -> dict[str, Any]:
         _job_dir(job_id)
