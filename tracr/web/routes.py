@@ -55,6 +55,65 @@ def build_web_router(*, settings: Settings, manager: JobManager, elo_manager: El
             raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
         return job_dir
 
+    def _candidate_source_pdf_paths(path_value: str) -> list[Path]:
+        value = path_value.strip()
+        if not value:
+            return []
+
+        candidates: list[Path] = [settings.resolve_path(value)]
+
+        # Back-compat: map stale absolute paths like /root/tracr/inputs/x.pdf to this host's inputs dir.
+        normalized = value.replace("\\", "/")
+        marker = "/inputs/"
+        if marker in normalized:
+            tail = normalized.split(marker, 1)[1].lstrip("/")
+            if tail:
+                candidates.append(settings.inputs_path / tail)
+
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = candidate.as_posix()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(candidate)
+        return unique
+
+    def _resolve_output_source_pdf(job_id: str, output: dict[str, Any]) -> Path | None:
+        raw_candidates: list[str] = []
+
+        source_pdf = str(output.get("source_pdf") or "").strip()
+        if source_pdf:
+            raw_candidates.append(source_pdf)
+
+        run_metadata = _read_json_if_exists(Path(output["pdf_dir"]).parent / "run_metadata.json")
+        source_files = run_metadata.get("source_files")
+        if isinstance(source_files, list):
+            raw_candidates.extend(str(item) for item in source_files if str(item).strip())
+
+        job_metadata = _read_json_if_exists(_job_dir(job_id) / "job_metadata.json")
+        input_path = str(job_metadata.get("input_path") or "").strip()
+        if input_path:
+            raw_candidates.append(input_path)
+
+        pdf_slug = str(output.get("pdf_slug") or "").strip()
+        if pdf_slug:
+            raw_candidates.append(f"inputs/{pdf_slug}.pdf")
+
+        seen: set[str] = set()
+        for raw_value in raw_candidates:
+            raw_value = raw_value.strip()
+            if not raw_value or raw_value in seen:
+                continue
+            seen.add(raw_value)
+
+            for candidate in _candidate_source_pdf_paths(raw_value):
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+
+        return None
+
     def _output_token_usage(pdf_metadata: dict[str, Any], page_number: int) -> int | None:
         pages = pdf_metadata.get("pages")
         if not isinstance(pages, list):
@@ -323,12 +382,8 @@ def build_web_router(*, settings: Settings, manager: JobManager, elo_manager: El
         if page_number not in output["page_numbers"]:
             raise HTTPException(status_code=404, detail=f"Page {page_number} not available for this output")
 
-        source_pdf = str(output["source_pdf"])
-        if not source_pdf:
-            raise HTTPException(status_code=500, detail="Source PDF path missing for this output")
-
-        pdf_path = Path(source_pdf)
-        if not pdf_path.exists():
+        pdf_path = _resolve_output_source_pdf(job_id, output)
+        if pdf_path is None:
             raise HTTPException(status_code=404, detail="Source PDF no longer exists")
 
         try:

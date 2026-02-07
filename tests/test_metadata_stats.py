@@ -74,6 +74,7 @@ def test_pdf_metadata_persists_page_and_global_stats(tmp_path: Path) -> None:
 
 def test_job_metadata_includes_rollup_statistics(tmp_path: Path) -> None:
     manager = _build_manager(tmp_path)
+    manager._project_root = tmp_path.resolve()
 
     run = ModelRunProgress(
         run_id="model-a:1",
@@ -108,6 +109,8 @@ def test_job_metadata_includes_rollup_statistics(tmp_path: Path) -> None:
     payload = json.loads(Path(job.metadata_path).read_text(encoding="utf-8"))
     stats = payload["statistics"]
 
+    assert payload["input_path"] == "inputs/doc.pdf"
+    assert payload["models"][0]["output_dir"] == "outputs/job-s/model-a/1"
     assert stats["pages_attempted"] == 2
     assert stats["pages_succeeded"] == 2
     assert stats["pages_failed"] == 0

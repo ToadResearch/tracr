@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tracr.core.config import Settings
+from tracr.core.config import REPO_ROOT, Settings
 from tracr.runtime.elo_manager import EloManager
 from tracr.runtime.job_manager import JobManager
 from tracr.web.routes import build_web_router
@@ -146,3 +146,95 @@ def test_web_viewer_and_elo_vote_flow(tmp_path: Path) -> None:
     elo_dir = settings.outputs_path / "job-1" / "elo"
     assert (elo_dir / "ratings.json").exists()
     assert (elo_dir / "votes.jsonl").exists()
+
+
+def test_web_viewer_page_image_resolves_relative_source_pdf(tmp_path: Path, monkeypatch) -> None:
+    client, settings = _build_client(tmp_path)
+    job_dir = settings.outputs_path / "job-1"
+
+    source_pdf_relative = f"inputs/invoice-web-route-{tmp_path.name}.pdf"
+    source_pdf = REPO_ROOT / source_pdf_relative
+    source_pdf.parent.mkdir(parents=True, exist_ok=True)
+    source_pdf.write_bytes(b"%PDF-1.4\n")
+
+    try:
+        _write_json(job_dir / "job_metadata.json", {"title": "Invoice Review", "created_at": "2026-02-07T00:00:00Z"})
+        _write_json(job_dir / "model-a" / "model_metadata.json", {"model": "model-a"})
+        _write_json(job_dir / "model-a" / "run-1" / "run_metadata.json", {"model": "model-a"})
+        _write_json(
+            job_dir / "model-a" / "run-1" / "invoice" / "pdf_metadata.json",
+            {"source_pdf": source_pdf_relative, "pages": [{"page_number": 1}]},
+        )
+        (job_dir / "model-a" / "run-1" / "invoice" / "1.md").write_text("# A output", encoding="utf-8")
+
+        called_with: dict[str, object] = {}
+
+        def _fake_render(pdf_path: Path, page_index: int, dpi: int) -> bytes:
+            called_with["pdf_path"] = pdf_path
+            called_with["page_index"] = page_index
+            called_with["dpi"] = dpi
+            return b"fake-png"
+
+        monkeypatch.setattr("tracr.web.routes.render_pdf_page_png", _fake_render)
+
+        outputs_resp = client.get("/api/web/jobs/job-1/outputs")
+        assert outputs_resp.status_code == 200
+        output_id = outputs_resp.json()["outputs"][0]["output_id"]
+
+        image_resp = client.get(
+            "/api/web/jobs/job-1/viewer/page-image",
+            params={"output_id": output_id, "page_number": 1},
+        )
+        assert image_resp.status_code == 200
+        assert image_resp.content == b"fake-png"
+        assert called_with["pdf_path"] == source_pdf
+        assert called_with["page_index"] == 0
+    finally:
+        source_pdf.unlink(missing_ok=True)
+
+
+def test_web_viewer_page_image_falls_back_from_stale_absolute_source_pdf(tmp_path: Path, monkeypatch) -> None:
+    client, settings = _build_client(tmp_path)
+    job_dir = settings.outputs_path / "job-1"
+
+    source_pdf = settings.inputs_path / "invoice.pdf"
+    source_pdf.parent.mkdir(parents=True, exist_ok=True)
+    source_pdf.write_bytes(b"%PDF-1.4\n")
+
+    _write_json(
+        job_dir / "job_metadata.json",
+        {"title": "Invoice Review", "created_at": "2026-02-07T00:00:00Z", "input_path": "inputs/invoice.pdf"},
+    )
+    _write_json(job_dir / "model-a" / "model_metadata.json", {"model": "model-a"})
+    _write_json(
+        job_dir / "model-a" / "run-1" / "run_metadata.json",
+        {"model": "model-a", "source_files": ["inputs/invoice.pdf"]},
+    )
+    _write_json(
+        job_dir / "model-a" / "run-1" / "invoice" / "pdf_metadata.json",
+        {"source_pdf": "/root/tracr/inputs/invoice.pdf", "pages": [{"page_number": 1}]},
+    )
+    (job_dir / "model-a" / "run-1" / "invoice" / "1.md").write_text("# A output", encoding="utf-8")
+
+    called_with: dict[str, object] = {}
+
+    def _fake_render(pdf_path: Path, page_index: int, dpi: int) -> bytes:
+        called_with["pdf_path"] = pdf_path
+        called_with["page_index"] = page_index
+        called_with["dpi"] = dpi
+        return b"fake-png"
+
+    monkeypatch.setattr("tracr.web.routes.render_pdf_page_png", _fake_render)
+
+    outputs_resp = client.get("/api/web/jobs/job-1/outputs")
+    assert outputs_resp.status_code == 200
+    output_id = outputs_resp.json()["outputs"][0]["output_id"]
+
+    image_resp = client.get(
+        "/api/web/jobs/job-1/viewer/page-image",
+        params={"output_id": output_id, "page_number": 1},
+    )
+    assert image_resp.status_code == 200
+    assert image_resp.content == b"fake-png"
+    assert called_with["pdf_path"] == source_pdf
+    assert called_with["page_index"] == 0

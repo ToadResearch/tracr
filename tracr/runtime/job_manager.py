@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from tracr.core.config import Settings
+from tracr.core.config import REPO_ROOT, Settings
 from tracr.core.input_discovery import expand_pdf_inputs, resolve_input_path
 from tracr.core.models import (
     JobProgress,
@@ -52,6 +52,7 @@ class JobManager:
         self.settings = settings
         self.layout = OutputLayout(settings)
         self.vllm_manager = VLLMServerManager(settings)
+        self._project_root = REPO_ROOT.resolve()
 
         self._state_lock = threading.RLock()
         self._jobs: dict[str, JobProgress] = {}
@@ -59,6 +60,37 @@ class JobManager:
         self._cancel_events: dict[str, threading.Event] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._run_metrics: dict[str, dict[str, Any]] = {}
+
+    def _to_project_relative_path(self, value: str | Path | None) -> str | None:
+        if value is None:
+            return None
+
+        raw = str(value).strip()
+        if not raw:
+            return raw
+
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            return path.as_posix()
+
+        try:
+            return path.resolve().relative_to(self._project_root).as_posix()
+        except Exception:  # noqa: BLE001
+            return str(path)
+
+    def _serialize_run_for_job_metadata(self, run: ModelRunProgress) -> dict[str, Any]:
+        payload = run.model_dump(mode="json")
+        payload["output_dir"] = self._to_project_relative_path(payload.get("output_dir"))
+        payload["current_pdf"] = self._to_project_relative_path(payload.get("current_pdf"))
+
+        source_files = payload.get("source_files")
+        if isinstance(source_files, list):
+            payload["source_files"] = [
+                rel
+                for rel in (self._to_project_relative_path(item) for item in source_files)
+                if rel
+            ]
+        return payload
 
     @staticmethod
     def _run_metrics_key(job_id: str, run_id: str) -> str:
@@ -250,7 +282,7 @@ class JobManager:
             {
                 "job_id": job_id,
                 "title": title,
-                "input_path": str(input_path),
+                "input_path": self._to_project_relative_path(input_path),
                 "created_at": datetime.now(UTC).isoformat(),
                 "prompt": request.prompt,
                 "models": [
@@ -465,7 +497,7 @@ class JobManager:
         payload = {
             "job_id": job.job_id,
             "title": job.title,
-            "input_path": job.input_path,
+            "input_path": self._to_project_relative_path(job.input_path),
             "status": job.status.value,
             "created_at": job.created_at.isoformat(),
             "started_at": job.started_at.isoformat() if job.started_at else None,
@@ -474,7 +506,7 @@ class JobManager:
             "total_pages_all_models": job.total_pages_all_models,
             "completed_pages_all_models": job.completed_pages_all_models,
             "progress_ratio": job.progress_ratio(),
-            "models": [run.model_dump(mode="json") for run in job.models],
+            "models": [self._serialize_run_for_job_metadata(run) for run in job.models],
             "statistics": self._job_statistics(job),
         }
         write_json(Path(job.metadata_path), payload)
