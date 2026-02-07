@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import json
 import os
@@ -93,6 +94,30 @@ class VLLMServerManager:
             self._allocated_gpu_ids.discard(gpu_id)
 
     @staticmethod
+    def _is_glm_ocr_model(model: str) -> bool:
+        return model.strip().lower() == "zai-org/glm-ocr"
+
+    @staticmethod
+    def _transformers_version() -> str:
+        try:
+            return importlib.metadata.version("transformers")
+        except Exception:
+            return "unknown"
+
+    @classmethod
+    def _transformers_major_version(cls) -> int | None:
+        version = cls._transformers_version()
+        if version == "unknown":
+            return None
+        match = re.match(r"^(\d+)", version)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+
+    @staticmethod
     def _tail_log_lines(path: Path, max_lines: int = 40) -> str:
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
@@ -128,7 +153,26 @@ class VLLMServerManager:
                 f"but only {self._total_gpus} GPUs are available"
             )
 
+        if self._is_glm_ocr_model(model):
+            transformers_major = self._transformers_major_version()
+            if transformers_major is not None and transformers_major < 5:
+                current = self._transformers_version()
+                raise RuntimeError(
+                    "zai-org/GLM-OCR requires newer transformers support for `glm_ocr` "
+                    f"(detected transformers=={current}). "
+                    "Upgrade as documented by the model page, e.g.:\n"
+                    "  uv pip install -U --pre vllm --extra-index-url https://wheels.vllm.ai/nightly\n"
+                    "  uv pip install -U git+https://github.com/huggingface/transformers.git"
+                )
+
         normalized_extra_args = [arg.strip() for arg in (extra_vllm_args or []) if arg and arg.strip()]
+        mm_limit_per_prompt = '{"video": 0}'
+        if self._is_glm_ocr_model(model):
+            mm_limit_per_prompt = '{"image": 1}'
+            has_allowed_media_path = any(arg == "--allowed-local-media-path" for arg in normalized_extra_args)
+            if not has_allowed_media_path:
+                normalized_extra_args.extend(["--allowed-local-media-path", "/"])
+
         key = (
             f"{model}::{tensor_parallel_size}::{data_parallel_size}::{gpu_memory_utilization}::{max_model_len}::"
             f"{json.dumps(normalized_extra_args)}"
@@ -169,7 +213,6 @@ class VLLMServerManager:
             model,
             "--port",
             str(port),
-            "--disable-log-requests",
             "--uvicorn-log-level",
             "warning",
             "--tensor-parallel-size",
@@ -177,7 +220,7 @@ class VLLMServerManager:
             "--data-parallel-size",
             str(data_parallel_size),
             "--limit-mm-per-prompt",
-            '{"video": 0}',
+            mm_limit_per_prompt,
             "--gpu-memory-utilization",
             str(gpu_memory_utilization),
             "--trust-remote-code",
@@ -219,6 +262,13 @@ class VLLMServerManager:
                 self._condition.notify_all()
             recent_logs = self._tail_log_lines(log_path)
             detail = f"{exc}. vLLM log: {log_path}"
+            if self._is_glm_ocr_model(model) and "does not recognize this architecture" in recent_logs:
+                detail += (
+                    "\nHint: GLM-OCR needs newer transformers support (`glm_ocr`). "
+                    "Try:\n"
+                    "  uv pip install -U --pre vllm --extra-index-url https://wheels.vllm.ai/nightly\n"
+                    "  uv pip install -U git+https://github.com/huggingface/transformers.git"
+                )
             if recent_logs:
                 detail += f"\nRecent log lines:\n{recent_logs}"
             raise RuntimeError(detail) from exc

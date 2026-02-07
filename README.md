@@ -178,6 +178,14 @@ Default OCR model list:
 - `allenai/olmOCR-2-7B-1025`
 - `datalab-to/chandra`
 
+`zai-org/GLM-OCR` note (per model docs): if startup fails with `glm_ocr` architecture errors,
+upgrade local runtime stack:
+
+```bash
+uv pip install -U --pre vllm --extra-index-url https://wheels.vllm.ai/nightly
+uv pip install -U git+https://github.com/huggingface/transformers.git
+```
+
 You can add any custom Hugging Face model id (`org/model`).
 Use `Add Local Model(s)` to queue local models without leaving the wizard.
 
