@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
-    Checkbox,
     DataTable,
     Input,
     Label,
@@ -33,9 +34,9 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
     }
 
     #wizard-root {
-      width: 98%;
-      height: 98%;
-      border: solid $accent;
+      width: 99%;
+      height: 99%;
+      border: heavy $accent;
       background: $panel;
       padding: 0 1;
     }
@@ -50,12 +51,41 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
     #wizard-step {
       color: $text-muted;
       height: auto;
+      margin-top: 1;
+      margin-bottom: 0;
+    }
+
+    #wizard-body {
+      height: 1fr;
+      layout: horizontal;
+      margin-top: 1;
+    }
+
+    #wizard-rail {
+      width: 30;
+      border: round $secondary;
+      margin-right: 1;
+      padding: 0 1;
+    }
+
+    #wizard-rail-title {
+      text-style: bold;
+      color: $accent;
+      margin-top: 1;
       margin-bottom: 1;
+    }
+
+    #wizard-steps {
+      height: 1fr;
+    }
+
+    #wizard-page-host {
+      width: 1fr;
     }
 
     .wizard-page {
       height: 1fr;
-      border: solid $secondary;
+      border: round $secondary;
       padding: 0 1;
     }
 
@@ -82,7 +112,7 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
     }
 
     .label {
-      width: 26;
+      width: 24;
       color: $text-muted;
     }
 
@@ -98,6 +128,21 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
 
     #ocr-prompt {
       height: 14;
+    }
+
+    #local-model-panel {
+      height: 9;
+      margin-bottom: 1;
+    }
+
+    #local-model-library {
+      height: 1fr;
+    }
+
+    #local-selection-line {
+      color: $text-muted;
+      margin-bottom: 1;
+      height: auto;
     }
 
     #review-summary,
@@ -120,10 +165,17 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
     """
 
     BINDINGS = [
+        Binding("left", "prev_page", show=False),
+        Binding("right", "next_page", show=False),
+        Binding("ctrl+up", "focus_prev_page_widget", "Prev Field"),
+        Binding("ctrl+down", "focus_next_page_widget", "Next Field"),
         Binding("ctrl+b", "prev_page", "Back"),
         Binding("ctrl+n", "next_page", "Next"),
         Binding("ctrl+l", "submit", "Launch"),
         Binding("ctrl+a", "add_models_to_queue", "Add Models"),
+        Binding("space", "toggle_local_model", show=False),
+        Binding("a", "select_all_local_models", show=False),
+        Binding("x", "clear_local_model_selection", show=False),
         Binding("f5", "check_key", "Check Key"),
         Binding("escape", "cancel", "Cancel"),
     ]
@@ -138,6 +190,49 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
     }
 
     ALL_PAGES = ("page-input", "page-job", "page-mode", "page-api", "page-local", "page-review")
+
+    PAGE_FOCUS_ORDER: dict[str, list[str]] = {
+        "page-input": [
+            "input-candidates",
+            "input-path",
+            "job-config-candidates",
+            "job-config-path",
+            "load-job-config-btn",
+            "refresh-job-configs-btn",
+        ],
+        "page-job": [
+            "job-id",
+            "job-title",
+            "max-tokens",
+            "temperature",
+            "ocr-prompt",
+        ],
+        "page-mode": ["mode-radio"],
+        "page-api": [
+            "api-provider",
+            "api-base-url",
+            "api-key-env",
+            "api-key",
+            "api-models",
+            "check-key-btn",
+            "add-api-models-btn",
+        ],
+        "page-local": [
+            "local-model-library",
+            "local-custom-models",
+            "local-tp-size",
+            "local-dp-size",
+            "local-gpu-mem",
+            "local-max-len",
+            "local-max-concurrency",
+            "add-local-models-btn",
+        ],
+        "page-review": [
+            "queued-models",
+            "remove-queued-model-btn",
+            "clear-queued-models-btn",
+        ],
+    }
 
     def __init__(
         self,
@@ -163,9 +258,8 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
         self.model_queue: list[dict[str, Any]] = []
         self.selected_queue_index: int | None = None
         self.preset_by_key = {item["key"]: item for item in presets}
-        self.local_checkbox_ids: dict[str, str] = {
-            model: f"local-model-{index}" for index, model in enumerate(self.local_models)
-        }
+        self.local_selected_models: set[str] = set()
+        self.local_highlighted_model: str | None = self.local_models[0] if self.local_models else None
 
     def compose(self) -> ComposeResult:
         preset_options = [(item["label"], item["key"]) for item in self.presets]
@@ -176,139 +270,155 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
 
         with Container(id="wizard-root"):
             yield Label("TRACR Launch Wizard", id="wizard-title")
-            yield Static("", id="wizard-step")
+            yield Static(
+                "Arrow flow: Left/Right steps, Up/Down inside tables, Enter selects, "
+                "Ctrl+Up/Ctrl+Down jumps fields.",
+                id="wizard-step",
+            )
 
-            with Vertical(id="page-input", classes="wizard-page"):
-                yield Label("Step: Input Source", classes="section-title")
-                yield Static(
-                    "Keyboard flow: use arrow keys in the table, Enter to select path, Tab to jump fields.",
-                    classes="help",
-                )
-                yield Static(f"Inputs root: {self.inputs_root}", classes="help")
-                yield DataTable(id="input-candidates", cursor_type="row")
-                with Horizontal(classes="row"):
-                    yield Label("Selected input path", classes="label")
-                    yield Input(id="input-path", placeholder="inputs/folder or /absolute/path")
+            with Horizontal(id="wizard-body"):
+                with Vertical(id="wizard-rail"):
+                    yield Label("Steps", id="wizard-rail-title")
+                    yield DataTable(id="wizard-steps", cursor_type="row")
+                with Vertical(id="wizard-page-host"):
+                    with Vertical(id="page-input", classes="wizard-page"):
+                        yield Label("Step: Input Source", classes="section-title")
+                        yield Static(
+                            "Use the tables with arrows; Enter copies the highlighted path.",
+                            classes="help",
+                        )
+                        yield Static(f"Inputs root: {self.inputs_root}", classes="help")
+                        yield DataTable(id="input-candidates", cursor_type="row")
+                        with Horizontal(classes="row"):
+                            yield Label("Selected input path", classes="label")
+                            yield Input(id="input-path", placeholder="inputs/folder or /absolute/path")
 
-                yield Label("Job Config YAML (optional)", classes="section-title")
-                yield Static(f"Job configs root: {self.job_configs_root}", id="job-config-root", classes="help")
-                yield DataTable(id="job-config-candidates", cursor_type="row")
-                with Horizontal(classes="row"):
-                    yield Label("Selected config path", classes="label")
-                    yield Input(id="job-config-path", placeholder="job_configs/example.yaml")
-                with Horizontal(classes="row"):
-                    yield Label("", classes="label")
-                    yield Button("Load Config YAML", id="load-job-config-btn", variant="primary")
-                    yield Button("Refresh Config List", id="refresh-job-configs-btn")
+                        yield Label("Job Config YAML (optional)", classes="section-title")
+                        yield Static(f"Job configs root: {self.job_configs_root}", id="job-config-root", classes="help")
+                        yield DataTable(id="job-config-candidates", cursor_type="row")
+                        with Horizontal(classes="row"):
+                            yield Label("Selected config path", classes="label")
+                            yield Input(id="job-config-path", placeholder="job_configs/example.yaml")
+                        with Horizontal(classes="row"):
+                            yield Label("", classes="label")
+                            yield Button("Load Config YAML", id="load-job-config-btn", variant="primary")
+                            yield Button("Refresh Config List", id="refresh-job-configs-btn")
 
-            with Vertical(id="page-job", classes="wizard-page hidden"):
-                yield Label("Step: Job Metadata & Prompt", classes="section-title")
-                with Horizontal(classes="row"):
-                    yield Label("Job id (optional)", classes="label")
-                    yield Input(id="job-id", placeholder="comparison-batch")
+                    with Vertical(id="page-job", classes="wizard-page hidden"):
+                        yield Label("Step: Job Metadata & Prompt", classes="section-title")
+                        with Horizontal(classes="row"):
+                            yield Label("Job id (optional)", classes="label")
+                            yield Input(id="job-id", placeholder="comparison-batch")
 
-                with Horizontal(classes="row"):
-                    yield Label("Job title (optional)", classes="label")
-                    yield Input(id="job-title", placeholder="invoice-batch-20260206")
+                        with Horizontal(classes="row"):
+                            yield Label("Job title (optional)", classes="label")
+                            yield Input(id="job-title", placeholder="invoice-batch-20260206")
 
-                with Horizontal(classes="row"):
-                    yield Label("Max tokens", classes="label")
-                    yield Input(value="2048", id="max-tokens")
+                        with Horizontal(classes="row"):
+                            yield Label("Max tokens", classes="label")
+                            yield Input(value="2048", id="max-tokens")
 
-                with Horizontal(classes="row"):
-                    yield Label("Temperature", classes="label")
-                    yield Input(value="0.0", id="temperature")
+                        with Horizontal(classes="row"):
+                            yield Label("Temperature", classes="label")
+                            yield Input(value="0.0", id="temperature")
 
-                yield Label("OCR prompt", classes="section-title")
-                yield TextArea(DEFAULT_OCR_PROMPT, id="ocr-prompt")
+                        yield Label("OCR prompt", classes="section-title")
+                        yield TextArea(DEFAULT_OCR_PROMPT, id="ocr-prompt")
 
-            with Vertical(id="page-mode", classes="wizard-page hidden"):
-                yield Label("Step: Execution Mode", classes="section-title")
-                yield Static("Choose a mode to add models into the queue. You can switch modes and add more.", classes="help")
-                with RadioSet(id="mode-radio"):
-                    yield RadioButton("API-based", id="mode-api", value=True)
-                    yield RadioButton("Local vLLM", id="mode-local")
+                    with Vertical(id="page-mode", classes="wizard-page hidden"):
+                        yield Label("Step: Execution Mode", classes="section-title")
+                        yield Static(
+                            "Choose a mode, then queue models. You can switch modes and add more.",
+                            classes="help",
+                        )
+                        with RadioSet(id="mode-radio"):
+                            yield RadioButton("API-based", id="mode-api", value=True)
+                            yield RadioButton("Local vLLM", id="mode-local")
 
-            with Vertical(id="page-api", classes="wizard-page hidden"):
-                yield Label("Step: API Model Setup", classes="section-title")
+                    with Vertical(id="page-api", classes="wizard-page hidden"):
+                        yield Label("Step: API Model Setup", classes="section-title")
 
-                with Horizontal(classes="row"):
-                    yield Label("Provider preset", classes="label")
-                    yield Select(options=preset_options, value=preset_options[0][1], id="api-provider")
+                        with Horizontal(classes="row"):
+                            yield Label("Provider preset", classes="label")
+                            yield Select(options=preset_options, value=preset_options[0][1], id="api-provider")
 
-                with Horizontal(classes="row"):
-                    yield Label("Endpoint URL", classes="label")
-                    yield Input(id="api-base-url")
+                        with Horizontal(classes="row"):
+                            yield Label("Endpoint URL", classes="label")
+                            yield Input(id="api-base-url")
 
-                with Horizontal(classes="row"):
-                    yield Label("API key env var", classes="label")
-                    yield Input(id="api-key-env")
+                        with Horizontal(classes="row"):
+                            yield Label("API key env var", classes="label")
+                            yield Input(id="api-key-env")
 
-                with Horizontal(classes="row"):
-                    yield Label("API key override", classes="label")
-                    yield Input(password=True, id="api-key", placeholder="optional")
+                        with Horizontal(classes="row"):
+                            yield Label("API key override", classes="label")
+                            yield Input(password=True, id="api-key", placeholder="optional")
 
-                with Horizontal(classes="row"):
-                    yield Label("Model(s)", classes="label")
-                    yield Input(id="api-models", placeholder="gpt-4.1-mini, openai/gpt-oss-120b")
+                        with Horizontal(classes="row"):
+                            yield Label("Model(s)", classes="label")
+                            yield Input(id="api-models", placeholder="gpt-4.1-mini, openai/gpt-oss-120b")
 
-                with Horizontal(classes="row"):
-                    yield Label("Example models", classes="label")
-                    yield Static("No preset examples", id="api-model-examples")
+                        with Horizontal(classes="row"):
+                            yield Label("Example models", classes="label")
+                            yield Static("No preset examples", id="api-model-examples")
 
-                with Horizontal(classes="row"):
-                    yield Label("Key status", classes="label")
-                    yield Static("Not checked", id="api-key-status")
+                        with Horizontal(classes="row"):
+                            yield Label("Key status", classes="label")
+                            yield Static("Not checked", id="api-key-status")
 
-                with Horizontal(classes="row"):
-                    yield Label("", classes="label")
-                    yield Button("Check Key (F5)", id="check-key-btn")
-                    yield Button("Add API Model(s) (^A)", id="add-api-models-btn", variant="success")
+                        with Horizontal(classes="row"):
+                            yield Label("", classes="label")
+                            yield Button("Check Key (F5)", id="check-key-btn")
+                            yield Button("Add API Model(s) (^A)", id="add-api-models-btn", variant="success")
 
-            with Vertical(id="page-local", classes="wizard-page hidden"):
-                yield Label("Step: Local Model Setup", classes="section-title")
-                yield Static("Toggle defaults with Space. Add custom model IDs if needed.", classes="help")
+                    with Vertical(id="page-local", classes="wizard-page hidden"):
+                        yield Label("Step: Local Model Setup", classes="section-title")
+                        yield Static(
+                            "Use the model library with arrows. Enter or Space toggles highlighted model.",
+                            classes="help",
+                        )
 
-                for model in self.local_models:
-                    yield Checkbox(model, value=False, id=self.local_checkbox_ids[model])
+                        with Vertical(id="local-model-panel"):
+                            yield DataTable(id="local-model-library", cursor_type="row")
+                        yield Static("", id="local-selection-line", classes="help")
 
-                with Horizontal(classes="row"):
-                    yield Label("Custom model(s)", classes="label")
-                    yield Input(id="local-custom-models", placeholder="org/model-a, org/model-b")
+                        with Horizontal(classes="row"):
+                            yield Label("Custom model(s)", classes="label")
+                            yield Input(id="local-custom-models", placeholder="org/model-a, org/model-b")
 
-                with Horizontal(classes="row"):
-                    yield Label("Tensor parallel GPUs", classes="label")
-                    yield Input(value="1", id="local-tp-size")
+                        with Horizontal(classes="row"):
+                            yield Label("Tensor parallel GPUs", classes="label")
+                            yield Input(value="1", id="local-tp-size")
 
-                with Horizontal(classes="row"):
-                    yield Label("Data parallel size", classes="label")
-                    yield Input(value="1", id="local-dp-size")
+                        with Horizontal(classes="row"):
+                            yield Label("Data parallel size", classes="label")
+                            yield Input(value="1", id="local-dp-size")
 
-                with Horizontal(classes="row"):
-                    yield Label("GPU memory utilization", classes="label")
-                    yield Input(value="0.90", id="local-gpu-mem")
+                        with Horizontal(classes="row"):
+                            yield Label("GPU memory utilization", classes="label")
+                            yield Input(value="0.90", id="local-gpu-mem")
 
-                with Horizontal(classes="row"):
-                    yield Label("Max model length", classes="label")
-                    yield Input(id="local-max-len", placeholder="optional")
+                        with Horizontal(classes="row"):
+                            yield Label("Max model length", classes="label")
+                            yield Input(id="local-max-len", placeholder="optional")
 
-                with Horizontal(classes="row"):
-                    yield Label("Max concurrent requests", classes="label")
-                    yield Input(value="8", id="local-max-concurrency")
+                        with Horizontal(classes="row"):
+                            yield Label("Max concurrent requests", classes="label")
+                            yield Input(value="8", id="local-max-concurrency")
 
-                with Horizontal(classes="row"):
-                    yield Label("", classes="label")
-                    yield Button("Add Local Model(s) (^A)", id="add-local-models-btn", variant="success")
+                        with Horizontal(classes="row"):
+                            yield Label("", classes="label")
+                            yield Button("Add Local Model(s) (^A)", id="add-local-models-btn", variant="success")
 
-            with Vertical(id="page-review", classes="wizard-page hidden"):
-                yield Label("Step: Review & Launch", classes="section-title")
-                yield Static("Queued models to run:", classes="help")
-                yield DataTable(id="queued-models", cursor_type="row")
-                with Horizontal(classes="row"):
-                    yield Label("", classes="label")
-                    yield Button("Remove Selected Model", id="remove-queued-model-btn", variant="warning")
-                    yield Button("Clear Queue", id="clear-queued-models-btn", variant="error")
-                yield Static("", id="review-summary")
+                    with Vertical(id="page-review", classes="wizard-page hidden"):
+                        yield Label("Step: Review & Launch", classes="section-title")
+                        yield Static("Queued models to run:", classes="help")
+                        yield DataTable(id="queued-models", cursor_type="row")
+                        with Horizontal(classes="row"):
+                            yield Label("", classes="label")
+                            yield Button("Remove Selected Model", id="remove-queued-model-btn", variant="warning")
+                            yield Button("Clear Queue", id="clear-queued-models-btn", variant="error")
+                        yield Static("", id="review-summary")
 
             with Horizontal(id="wizard-nav"):
                 yield Button("Back (^B)", id="back-btn")
@@ -317,6 +427,9 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
                 yield Button("Cancel (Esc)", id="cancel-btn", variant="error")
 
     async def on_mount(self) -> None:
+        step_table = self.query_one("#wizard-steps", DataTable)
+        step_table.add_columns("", "Step")
+
         input_table = self.query_one("#input-candidates", DataTable)
         input_table.add_columns("Kind", "Path")
 
@@ -336,11 +449,33 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
         queue_table.add_columns("#", "Mode", "Model", "Config")
         self._render_model_queue()
 
+        local_table = self.query_one("#local-model-library", DataTable)
+        local_table.add_columns("Use", "Model")
+        self._render_local_model_library()
+
         provider = self.query_one("#api-provider", Select)
         await self._apply_preset(str(provider.value) if provider.value is not None else None)
 
-        self._show_current_page()
-        self.query_one("#input-path", Input).focus()
+        self._show_current_page(focus_default=True)
+        input_table.focus()
+
+    def _render_step_rail(self) -> None:
+        step_table = self.query_one("#wizard-steps", DataTable)
+        step_table.clear(columns=False)
+
+        active_pages = self._active_pages()
+        for index, page_id in enumerate(active_pages):
+            marker = ">"
+            if index < self.current_step:
+                marker = "x"
+            elif index > self.current_step:
+                marker = "-"
+            step_table.add_row(marker, self.PAGE_TITLES[page_id], key=page_id)
+
+        try:
+            step_table.move_cursor(row=self.current_step)
+        except Exception:
+            pass
 
     def _render_job_config_candidates(self) -> None:
         table = self.query_one("#job-config-candidates", DataTable)
@@ -359,6 +494,64 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
         first_path = str(self.job_config_candidates[0].get("path", ""))
         if first_path and not self.query_one("#job-config-path", Input).value.strip():
             self.query_one("#job-config-path", Input).value = first_path
+
+    def _render_local_model_library(self) -> None:
+        table = self.query_one("#local-model-library", DataTable)
+        table.clear(columns=False)
+
+        if not self.local_models:
+            self.local_highlighted_model = None
+            table.add_row("-", "No local model defaults configured")
+            self._render_local_selection_line()
+            return
+
+        for model in self.local_models:
+            marker = Text("[x]") if model in self.local_selected_models else Text("[ ]")
+            table.add_row(marker, model, key=model)
+
+        if self.local_highlighted_model not in self.local_models:
+            self.local_highlighted_model = self.local_models[0]
+
+        if self.local_highlighted_model is not None:
+            try:
+                row_index = table.get_row_index(self.local_highlighted_model)
+                table.move_cursor(row=row_index)
+            except Exception:
+                self.local_highlighted_model = self.local_models[0]
+
+        self._render_local_selection_line()
+
+    def _render_local_selection_line(self) -> None:
+        summary = self.query_one("#local-selection-line", Static)
+        selected_defaults = len(self.local_selected_models)
+        total_defaults = len(self.local_models)
+
+        custom_raw = self.query_one("#local-custom-models", Input).value
+        custom_models = [entry.strip() for entry in custom_raw.replace("\n", ",").split(",") if entry.strip()]
+
+        summary.update(
+            "Defaults selected: "
+            f"{selected_defaults}/{total_defaults} | "
+            f"Custom models: {len(custom_models)} | "
+            f"Total local models: {selected_defaults + len(custom_models)}"
+        )
+
+    def _highlighted_local_model(self) -> str | None:
+        if self.local_highlighted_model in self.local_models:
+            return self.local_highlighted_model
+        if self.local_models:
+            return self.local_models[0]
+        return None
+
+    def _toggle_local_model_by_name(self, model: str) -> None:
+        if model not in self.local_models:
+            return
+        if model in self.local_selected_models:
+            self.local_selected_models.remove(model)
+        else:
+            self.local_selected_models.add(model)
+        self.local_highlighted_model = model
+        self._render_local_model_library()
 
     def _model_queue_key(self, model: dict[str, Any]) -> tuple[Any, ...]:
         mode = str(model.get("mode", ""))
@@ -458,7 +651,7 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
         self.current_step = max(0, min(self.current_step, len(pages) - 1))
         return pages[self.current_step]
 
-    def _show_current_page(self) -> None:
+    def _show_current_page(self, *, focus_default: bool = False) -> None:
         current = self._current_page_id()
 
         for page_id in self.ALL_PAGES:
@@ -471,13 +664,16 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
         step_widget = self.query_one("#wizard-step", Static)
         step_widget.update(
             f"Step {self.current_step + 1}/{len(self._active_pages())}: {self.PAGE_TITLES[current]} "
-            "| Tab/Shift+Tab focus | ^N next | ^B back | ^A add models | ^L launch"
+            "| Left/Right pages | Ctrl+Up/Down fields | Enter selects | ^A add models | ^L launch"
         )
 
+        self._render_step_rail()
         self._update_nav_buttons()
 
         if current == "page-review":
             self._render_review_summary()
+        if focus_default:
+            self._focus_default_for_page(current)
 
     def _update_nav_buttons(self) -> None:
         current = self._current_page_id()
@@ -488,6 +684,47 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
         back_btn.disabled = self.current_step == 0
         next_btn.disabled = current == "page-review"
         launch_btn.disabled = current != "page-review"
+
+    def _focus_default_for_page(self, page_id: str) -> None:
+        targets = self.PAGE_FOCUS_ORDER.get(page_id, [])
+        for widget_id in targets:
+            try:
+                widget = self.query_one(f"#{widget_id}")
+            except Exception:
+                continue
+            widget.focus()
+            return
+
+    def _focus_page_widget(self, direction: int) -> None:
+        page_id = self._current_page_id()
+        widget_ids = self.PAGE_FOCUS_ORDER.get(page_id, [])
+        focusable: list[Widget] = []
+        for widget_id in widget_ids:
+            try:
+                focusable.append(self.query_one(f"#{widget_id}"))
+            except Exception:
+                continue
+
+        if not focusable:
+            return
+
+        focused = self.app.focused
+        if focused is None:
+            target_index = 0 if direction > 0 else len(focusable) - 1
+            focusable[target_index].focus()
+            return
+
+        current_index = -1
+        for idx, widget in enumerate(focusable):
+            if widget is focused:
+                current_index = idx
+                break
+
+        if current_index < 0:
+            target_index = 0 if direction > 0 else len(focusable) - 1
+        else:
+            target_index = (current_index + direction) % len(focusable)
+        focusable[target_index].focus()
 
     def _validate_api_form_for_add(self) -> bool:
         base_url = self.query_one("#api-base-url", Input).value.strip()
@@ -505,6 +742,7 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
     def _validate_local_form_for_add(self) -> bool:
         if not self._collect_local_model_names():
             self.notify("Select at least one local model", severity="error")
+            self.query_one("#local-model-library", DataTable).focus()
             return False
 
         try:
@@ -608,12 +846,7 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
         return True
 
     def _collect_local_model_names(self) -> list[str]:
-        selected: list[str] = []
-
-        for model in self.local_models:
-            checkbox = self.query_one(f"#{self.local_checkbox_ids[model]}", Checkbox)
-            if checkbox.value:
-                selected.append(model)
+        selected: list[str] = [model for model in self.local_models if model in self.local_selected_models]
 
         custom_raw = self.query_one("#local-custom-models", Input).value
         custom_models = [entry.strip() for entry in custom_raw.replace("\n", ",").split(",") if entry.strip()]
@@ -782,11 +1015,28 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
+    def _jump_to_step(self, target_index: int) -> None:
+        pages = self._active_pages()
+        if not pages:
+            return
+
+        target_index = max(0, min(target_index, len(pages) - 1))
+        if target_index == self.current_step:
+            return
+
+        if target_index > self.current_step:
+            for step in range(self.current_step, target_index):
+                if not self._validate_page(pages[step]):
+                    return
+
+        self.current_step = target_index
+        self._show_current_page(focus_default=True)
+
     def action_prev_page(self) -> None:
         if self.current_step <= 0:
             return
         self.current_step -= 1
-        self._show_current_page()
+        self._show_current_page(focus_default=True)
 
     def action_next_page(self) -> None:
         current = self._current_page_id()
@@ -797,7 +1047,33 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
             return
 
         self.current_step += 1
-        self._show_current_page()
+        self._show_current_page(focus_default=True)
+
+    def action_focus_next_page_widget(self) -> None:
+        self._focus_page_widget(1)
+
+    def action_focus_prev_page_widget(self) -> None:
+        self._focus_page_widget(-1)
+
+    def action_toggle_local_model(self) -> None:
+        if self._current_page_id() != "page-local":
+            return
+        model = self._highlighted_local_model()
+        if model is None:
+            return
+        self._toggle_local_model_by_name(model)
+
+    def action_select_all_local_models(self) -> None:
+        if self._current_page_id() != "page-local":
+            return
+        self.local_selected_models = set(self.local_models)
+        self._render_local_model_library()
+
+    def action_clear_local_model_selection(self) -> None:
+        if self._current_page_id() != "page-local":
+            return
+        self.local_selected_models.clear()
+        self._render_local_model_library()
 
     async def action_check_key(self) -> None:
         provider = str(self.query_one("#api-provider", Select).value)
@@ -880,13 +1156,20 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
             api_model_names = [str(model.get("model")) for model in loaded_models if model.get("mode") == "api"]
             self.query_one("#api-models", Input).value = ", ".join(api_model_names)
 
+        self.local_selected_models.clear()
+        if self.local_models:
+            self.local_highlighted_model = self.local_models[0]
+        else:
+            self.local_highlighted_model = None
+        self.query_one("#local-custom-models", Input).value = ""
+
         first_local = next((model for model in loaded_models if model.get("mode") == "local"), None)
         if first_local:
             local_names = [str(model.get("model")) for model in loaded_models if model.get("mode") == "local"]
-            for local_model_name in self.local_models:
-                checkbox = self.query_one(f"#{self.local_checkbox_ids[local_model_name]}", Checkbox)
-                checkbox.value = local_model_name in local_names
-
+            self.local_selected_models = {name for name in local_names if name in self.local_models}
+            self.local_highlighted_model = next(iter(self.local_selected_models), self.local_highlighted_model)
+            if self.local_highlighted_model not in self.local_models and self.local_models:
+                self.local_highlighted_model = self.local_models[0]
             custom_local = [name for name in local_names if name not in self.local_models]
             self.query_one("#local-custom-models", Input).value = ", ".join(custom_local)
             self.query_one("#local-tp-size", Input).value = str(first_local.get("tensor_parallel_size", 1))
@@ -895,6 +1178,8 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
             max_len_value = first_local.get("max_model_len")
             self.query_one("#local-max-len", Input).value = "" if max_len_value is None else str(max_len_value)
             self.query_one("#local-max-concurrency", Input).value = str(first_local.get("max_concurrent_requests", 8))
+
+        self._render_local_model_library()
 
         first_mode = str(loaded_models[0].get("mode", "")) if loaded_models else "api"
         self.query_one("#mode-api", RadioButton).value = first_mode == "api"
@@ -1067,11 +1352,51 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
         if key:
             self.query_one("#input-path", Input).value = key
 
+    @on(DataTable.RowHighlighted, "#input-candidates")
+    def on_input_candidate_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        key = _row_key_value(event.row_key)
+        if key:
+            self.query_one("#input-path", Input).value = key
+
     @on(DataTable.RowSelected, "#job-config-candidates")
     def on_job_config_candidate_selected(self, event: DataTable.RowSelected) -> None:
         key = _row_key_value(event.row_key)
         if key:
             self.query_one("#job-config-path", Input).value = key
+
+    @on(DataTable.RowHighlighted, "#job-config-candidates")
+    def on_job_config_candidate_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        key = _row_key_value(event.row_key)
+        if key:
+            self.query_one("#job-config-path", Input).value = key
+
+    @on(DataTable.RowSelected, "#wizard-steps")
+    def on_wizard_step_selected(self, event: DataTable.RowSelected) -> None:
+        key = _row_key_value(event.row_key)
+        if not key:
+            return
+        pages = self._active_pages()
+        if key not in pages:
+            return
+        self._jump_to_step(pages.index(key))
+
+    @on(DataTable.RowHighlighted, "#local-model-library")
+    def on_local_model_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        key = _row_key_value(event.row_key)
+        if key:
+            self.local_highlighted_model = key
+
+    @on(DataTable.RowSelected, "#local-model-library")
+    def on_local_model_selected(self, event: DataTable.RowSelected) -> None:
+        key = _row_key_value(event.row_key)
+        if not key:
+            return
+        self.local_highlighted_model = key
+        self._toggle_local_model_by_name(key)
+
+    @on(Input.Changed, "#local-custom-models")
+    def on_local_custom_models_changed(self, _: Input.Changed) -> None:
+        self._render_local_selection_line()
 
     @on(DataTable.RowHighlighted, "#queued-models")
     def on_queued_model_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -1095,4 +1420,4 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
     @on(RadioSet.Changed, "#mode-radio")
     def on_mode_changed(self, _: RadioSet.Changed) -> None:
         self.current_step = min(self.current_step, len(self._active_pages()) - 1)
-        self._show_current_page()
+        self._show_current_page(focus_default=True)
