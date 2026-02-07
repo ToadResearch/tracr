@@ -131,18 +131,12 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
     }
 
     #local-model-panel {
-      height: 9;
+      height: 7;
       margin-bottom: 1;
     }
 
     #local-model-library {
       height: 1fr;
-    }
-
-    #local-selection-line {
-      color: $text-muted;
-      margin-bottom: 1;
-      height: auto;
     }
 
     #review-summary,
@@ -219,13 +213,13 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
         ],
         "page-local": [
             "local-model-library",
+            "add-local-models-btn",
             "local-custom-models",
             "local-tp-size",
             "local-dp-size",
             "local-gpu-mem",
             "local-max-len",
-            "local-max-concurrency",
-            "add-local-models-btn",
+            "local-batch-size",
         ],
         "page-review": [
             "queued-models",
@@ -380,7 +374,10 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
 
                         with Vertical(id="local-model-panel"):
                             yield DataTable(id="local-model-library", cursor_type="row")
-                        yield Static("", id="local-selection-line", classes="help")
+
+                        with Horizontal(classes="row"):
+                            yield Label("", classes="label")
+                            yield Button("Add Local Model(s) (^A)", id="add-local-models-btn", variant="success")
 
                         with Horizontal(classes="row"):
                             yield Label("Custom model(s)", classes="label")
@@ -403,12 +400,8 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
                             yield Input(id="local-max-len", placeholder="optional")
 
                         with Horizontal(classes="row"):
-                            yield Label("Max concurrent requests", classes="label")
-                            yield Input(value="8", id="local-max-concurrency")
-
-                        with Horizontal(classes="row"):
-                            yield Label("", classes="label")
-                            yield Button("Add Local Model(s) (^A)", id="add-local-models-btn", variant="success")
+                            yield Label("Batch size", classes="label")
+                            yield Input(value="8", id="local-batch-size")
 
                     with Vertical(id="page-review", classes="wizard-page hidden"):
                         yield Label("Step: Review & Launch", classes="section-title")
@@ -502,7 +495,6 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
         if not self.local_models:
             self.local_highlighted_model = None
             table.add_row("-", "No local model defaults configured")
-            self._render_local_selection_line()
             return
 
         for model in self.local_models:
@@ -518,23 +510,6 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
                 table.move_cursor(row=row_index)
             except Exception:
                 self.local_highlighted_model = self.local_models[0]
-
-        self._render_local_selection_line()
-
-    def _render_local_selection_line(self) -> None:
-        summary = self.query_one("#local-selection-line", Static)
-        selected_defaults = len(self.local_selected_models)
-        total_defaults = len(self.local_models)
-
-        custom_raw = self.query_one("#local-custom-models", Input).value
-        custom_models = [entry.strip() for entry in custom_raw.replace("\n", ",").split(",") if entry.strip()]
-
-        summary.update(
-            "Defaults selected: "
-            f"{selected_defaults}/{total_defaults} | "
-            f"Custom models: {len(custom_models)} | "
-            f"Total local models: {selected_defaults + len(custom_models)}"
-        )
 
     def _highlighted_local_model(self) -> str | None:
         if self.local_highlighted_model in self.local_models:
@@ -784,12 +759,12 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
                 return False
 
         try:
-            max_concurrency = int(self.query_one("#local-max-concurrency", Input).value.strip())
-            if max_concurrency <= 0:
+            batch_size = int(self.query_one("#local-batch-size", Input).value.strip())
+            if batch_size <= 0:
                 raise ValueError
         except Exception:
-            self.notify("Max concurrent requests must be a positive integer", severity="error")
-            self.query_one("#local-max-concurrency", Input).focus()
+            self.notify("Batch size must be a positive integer", severity="error")
+            self.query_one("#local-batch-size", Input).focus()
             return False
 
         return True
@@ -889,7 +864,7 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
         gpu_mem = float(self.query_one("#local-gpu-mem", Input).value.strip() or "0.90")
         max_len_raw = self.query_one("#local-max-len", Input).value.strip()
         max_len = int(max_len_raw) if max_len_raw else None
-        max_concurrency = int(self.query_one("#local-max-concurrency", Input).value.strip() or "8")
+        batch_size = int(self.query_one("#local-batch-size", Input).value.strip() or "8")
 
         return [
             {
@@ -899,7 +874,7 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
                 "data_parallel_size": dp_size,
                 "gpu_memory_utilization": gpu_mem,
                 "max_model_len": max_len,
-                "max_concurrent_requests": max_concurrency,
+                "max_concurrent_requests": batch_size,
             }
             for model in models
         ]
@@ -1177,7 +1152,7 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
             self.query_one("#local-gpu-mem", Input).value = str(first_local.get("gpu_memory_utilization", 0.90))
             max_len_value = first_local.get("max_model_len")
             self.query_one("#local-max-len", Input).value = "" if max_len_value is None else str(max_len_value)
-            self.query_one("#local-max-concurrency", Input).value = str(first_local.get("max_concurrent_requests", 8))
+            self.query_one("#local-batch-size", Input).value = str(first_local.get("max_concurrent_requests", 8))
 
         self._render_local_model_library()
 
@@ -1393,10 +1368,6 @@ class LaunchWizardScreen(ModalScreen[dict[str, Any] | None]):
             return
         self.local_highlighted_model = key
         self._toggle_local_model_by_name(key)
-
-    @on(Input.Changed, "#local-custom-models")
-    def on_local_custom_models_changed(self, _: Input.Changed) -> None:
-        self._render_local_selection_line()
 
     @on(DataTable.RowHighlighted, "#queued-models")
     def on_queued_model_highlighted(self, event: DataTable.RowHighlighted) -> None:
