@@ -116,9 +116,9 @@ class TracrTUIApp(App[None]):
                     yield Button("Quit (Q)", id="quit", variant="error")
             with Vertical(id="details-pane"):
                 yield Label("Job Detail", classes="pane-title")
-                yield Static("No job selected", id="job-details")
+                yield Static("No job selected", id="job-details", markup=False)
                 yield Label("GPU", classes="pane-title")
-                yield Static("No GPU data", id="gpu-details")
+                yield Static("No GPU data", id="gpu-details", markup=False)
         yield Footer()
 
     async def on_mount(self) -> None:

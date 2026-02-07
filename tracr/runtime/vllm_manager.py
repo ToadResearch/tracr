@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import socket
 import subprocess
 import threading
@@ -97,6 +98,8 @@ class VLLMServerManager:
             content = path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             return ""
+        # Remove ANSI escape sequences from vLLM logs before surfacing in API/UI.
+        content = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", content)
         lines = content.splitlines()
         if not lines:
             return ""

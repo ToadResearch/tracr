@@ -109,8 +109,8 @@ class JobRunsScreen(ModalScreen[None]):
             with Horizontal(id="runs-body"):
                 yield DataTable(id="runs-table", cursor_type="row")
                 with Vertical(id="runs-right"):
-                    yield Static("Loading job details...", id="runs-job-detail")
-                    yield Static("Loading GPU details...", id="runs-gpu-detail")
+                    yield Static("Loading job details...", id="runs-job-detail", markup=False)
+                    yield Static("Loading GPU details...", id="runs-gpu-detail", markup=False)
             with Horizontal(id="runs-actions"):
                 yield Button("View Pages (Enter)", id="runs-view-pages", variant="primary")
                 yield Button("Refresh (R)", id="runs-refresh")
